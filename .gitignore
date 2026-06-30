@@ -9,6 +9,9 @@ Cargo.lock
 /tmp/
 *.log
 
+# 测试数据（本地，不上传）
+/data/
+
 # IDE / OS
 .vscode/*
 !.vscode/settings.json

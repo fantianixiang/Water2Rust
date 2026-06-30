@@ -1,0 +1,12 @@
+# vendored from neon/TWE (AesMetaTool crates/twe-tile)，eci-gdal proj 的 tile 特性依赖。
+# 零外部依赖、纯整数位运算；如上游更新需手动同步。
+[package]
+name = "twe-tile"
+version = "0.1.0"
+edition = "2024"
+description = "Quadkey/topkey tile addressing — zero external dependencies"
+
+# 零外部依赖：纯整数位运算
+[dependencies]
+
+[dev-dependencies]

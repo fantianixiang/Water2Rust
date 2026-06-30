@@ -9,16 +9,19 @@ members = [
     "crates/water-edge-depth",
     # ── eci-gdal（纯 Rust GDAL，git submodule，作为本 workspace 成员嵌入） ──
     # eci-gdal 顶层无 Cargo.toml，各子 crate 以 `.workspace = true` 声明依赖，
-    # 必须作为父 workspace 成员编译。当前仅纳入 water-io 所需的最小纯 Rust 集合；
-    # 矢量（vector）与 GeoPackage（gpkg）因依赖 SQLite（libsqlite3-sys，唯一 C 豁免），
-    # 推迟到矢量 IO / fclass 里程碑再加入 "crates/eci-gdal/vector" 与 "crates/eci-gdal/gpkg"。
+    # 必须作为父 workspace 成员编译。
+    # vector 提供 Shapefile / GeoJSON / WKT / GeoPackage（矢量）读取，替代 fiona/geopandas；
+    # 其读 GeoPackage 矢量图层依赖 SQLite（rusqlite/libsqlite3-sys，唯一允许的 C 豁免）。
+    # gpkg（GeoPackage 栅格瓦片金字塔读取）waters 不用到，故不纳入。
     "crates/eci-gdal/core",
     "crates/eci-gdal/alg",
     "crates/eci-gdal/proj",
     "crates/eci-gdal/geotiff",
+    "crates/eci-gdal/vector",
     "crates/eci-gdal/testkit",
-    # twe-tile 空 stub：仅为满足 proj 可选依赖的解析（详见 AGENTS.md）
-    "crates/shims/twe-tile",
+    # twe-tile：eci-gdal proj 的 `tile` 默认特性所需（quadkey/topkey 瓦片寻址，零依赖纯 Rust），
+    # 从 eci-gdal 同源的 AesMetaTool vendored 进本仓库以保持自包含（详见 AGENTS.md）。
+    "crates/twe-tile",
 ]
 default-members = ["apps/water_cli", "apps/water_api"]
 resolver = "3"
@@ -44,8 +47,8 @@ eci-gdal-proj = { path = "crates/eci-gdal/proj" }
 eci-gdal-geotiff = { path = "crates/eci-gdal/geotiff" }
 eci-gdal-vector = { path = "crates/eci-gdal/vector" }
 eci-gdal-testkit = { path = "crates/eci-gdal/testkit" }
-# twe-tile 空 stub（满足 proj 可选 tile 特性依赖的解析，永不启用）
-twe-tile = { path = "crates/shims/twe-tile" }
+# twe-tile（eci-gdal proj 的 `tile` 默认特性依赖，零依赖纯 Rust，vendored）
+twe-tile = { path = "crates/twe-tile" }
 
 # ── 外部共享依赖 ──
 # 版本与特性须与 eci-gdal 来源仓库（AesMetaTool）对齐，

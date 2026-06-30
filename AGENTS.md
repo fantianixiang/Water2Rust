@@ -31,7 +31,7 @@
   - Shapefile / GeoJSON / GeoPackage 解析（替代 fiona、geopandas） → `eci-gdal-vector`
   - 重采样 / 栅格化 / 色彩 → `eci-gdal-alg`
 - **已豁免的通用类型库**：`geo` / `geo-types`（通用几何类型，替代 shapely 几何）、`ndarray`（替代 numpy 数组）、`rstar`（空间索引，替代 scipy.spatial.cKDTree）。
-- **唯一的 C 绑定豁免**：`libsqlite3-sys`（经 `rusqlite` bundled 引入），仅用于读取 GeoPackage（SQLite 容器，GIS 事实标准、无生产可用纯 Rust 替代）。仅在纳入 eci-gdal 的 `vector` / `gpkg` 成员时才会编译，需本机具备 C 工具链。
+- **唯一的 C 绑定豁免**：`libsqlite3-sys`（经 `rusqlite` bundled 引入），仅用于读取 GeoPackage（SQLite 容器，GIS 事实标准、无生产可用纯 Rust 替代）。已随 `eci-gdal-vector` 成员启用，需本机具备 C 工具链。
 - **自研算法**（GIS 行业无现成纯 Rust 库时）：形态学 / 高斯滤波 / 距离变换（替代 scipy.ndimage）、骨架提取 skeletonize（替代 skimage.morphology）。这些放在 `water-core` 的 `raster_ops` 模块，**必须**与 scipy/skimage 做数值对拍。
 - **无畏并发**：`rayon`（CPU）+ `tokio`（I/O）。瓦片级并行优先，保证单文件输出足够快。
 
@@ -48,13 +48,16 @@
   # 或克隆后补拉：
   git submodule update --init --recursive
   ```
-- 已纳入的 eci-gdal 成员（water-io 栅格/投影所需的最小**纯 Rust**集）：`core`、`alg`、`proj`、`geotiff`、`testkit`。
-- **矢量与 GeoPackage 暂缓**：`vector`、`gpkg` 因依赖 SQLite（`libsqlite3-sys`，**唯一允许的 C 豁免**，GeoPackage 是 SQLite 容器，无生产可用纯 Rust 替代）而暂未纳入成员；
-  待落地矢量 IO / fclass 读取 GeoPackage 时再向根 `Cargo.toml` 的 `members` 加入 `crates/eci-gdal/vector` 与 `crates/eci-gdal/gpkg`（届时启用 `rusqlite` bundled，需本机有 C 工具链 / MSVC）。
-- **twe-tile stub**：`proj` 有一个可选依赖 `twe-tile`（`tile` 特性，默认关闭）。Cargo 要求即便关闭的可选 workspace 依赖也必须有定义，故在 `crates/shims/twe-tile` 提供**空 stub** 满足解析。**切勿启用 `proj` 的 `tile` 特性**。
+- 已纳入的 eci-gdal 成员（water-io 栅格/投影/矢量所需）：`core`、`alg`、`proj`、`geotiff`、`vector`、`testkit`。
+- **矢量 IO 经 `vector`**：`eci-gdal-vector` 提供 Shapefile / GeoJSON / WKT / GeoPackage（矢量）读取，替代 fiona / geopandas / shapely。
+  其读 GeoPackage 矢量图层依赖 `rusqlite`（`libsqlite3-sys` bundled，**唯一允许的 C 豁免**），需本机具备 C 工具链 / MSVC。
+  `gpkg`（GeoPackage **栅格瓦片金字塔** 读取器）waters 不用到，故未纳入。
+- **twe-tile（真实依赖，非 stub）**：`proj` 的 `tile` 是**默认特性**，提供 Web Mercator 的 quadkey/topkey 瓦片寻址（零依赖纯整数运算）。
+  原 Python `waters` 并未使用这种瓦片寻址（其 `tiling.py` 是 rasterio 栅格窗口分块，与此无关）；
+  但为不破坏 eci-gdal proj 的默认能力，将同源的 `twe-tile`（位于 AesMetaTool）**vendored 进 `crates/twe-tile`** 以保持自包含。
 - **版本对齐**：根 `[workspace.dependencies]` 中 `geo` / `geo-types` 等与 eci-gdal 来源仓库保持同版本，
   跨 crate 传递几何类型时必须一致；另复刻了 `[patch.crates-io] tiff = tiff-patch`（GeoTIFF 兼容补丁）。
-- **接入后续**：`water-io` 已开启 `eci-gdal-{core,geotiff,proj}` 依赖，下一步把栅格桩实现替换为真实调用。
+- **接入后续**：`water-io` 已开启 `eci-gdal-{core,geotiff,proj,vector}` 依赖，下一步把栅格/矢量桩实现替换为真实调用。
 
 ### Rust 工具链（前置步骤）
 

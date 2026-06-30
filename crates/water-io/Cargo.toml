@@ -13,8 +13,8 @@ serde.workspace = true
 serde_json.workspace = true
 
 # ── eci-gdal（纯 Rust GDAL，GIS 底层入口） ──
-# 当前里程碑仅接入栅格/投影（纯 Rust）；矢量 IO 待 eci-gdal-vector 纳入后开启。
+# 栅格/投影（纯 Rust）+ 矢量（vector，含 Shapefile/GeoJSON/GeoPackage 矢量，经 SQLite）。
 eci-gdal-core.workspace = true
 eci-gdal-geotiff.workspace = true
 eci-gdal-proj.workspace = true
-# eci-gdal-vector.workspace = true
+eci-gdal-vector.workspace = true
