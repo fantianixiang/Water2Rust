@@ -31,28 +31,35 @@
   - Shapefile / GeoJSON / GeoPackage 解析（替代 fiona、geopandas） → `eci-gdal-vector`
   - 重采样 / 栅格化 / 色彩 → `eci-gdal-alg`
 - **已豁免的通用类型库**：`geo` / `geo-types`（通用几何类型，替代 shapely 几何）、`ndarray`（替代 numpy 数组）、`rstar`（空间索引，替代 scipy.spatial.cKDTree）。
+- **唯一的 C 绑定豁免**：`libsqlite3-sys`（经 `rusqlite` bundled 引入），仅用于读取 GeoPackage（SQLite 容器，GIS 事实标准、无生产可用纯 Rust 替代）。仅在纳入 eci-gdal 的 `vector` / `gpkg` 成员时才会编译，需本机具备 C 工具链。
 - **自研算法**（GIS 行业无现成纯 Rust 库时）：形态学 / 高斯滤波 / 距离变换（替代 scipy.ndimage）、骨架提取 skeletonize（替代 skimage.morphology）。这些放在 `water-core` 的 `raster_ops` 模块，**必须**与 scipy/skimage 做数值对拍。
 - **无畏并发**：`rayon`（CPU）+ `tokio`（I/O）。瓦片级并行优先，保证单文件输出足够快。
 
-### eci-gdal 接入（前置步骤，尚未完成）
+### eci-gdal 接入（已完成：作为本仓库 git submodule）
 
-> ⚠️ 当前状态：`eci-gdal` 是 `AesMetaTool` 仓库的 git submodule（`crates/eci-gdal`），**在本机尚未初始化、本地无源码**。在接入前，`water-io` 等 crate 以**桩实现**占位、可独立编译，但不具备真实 IO 能力。
+> ✅ 当前状态：`eci-gdal`（纯 Rust GDAL）已作为本仓库 git submodule 接入于 `crates/eci-gdal`，
+> 来源为内网 GitLab `git@git.51vr.local:neon/TWE/eci-gdal.git`（与 `AesMetaTool` 同源）。
+> 它**没有顶层 Cargo.toml**，各子 crate 以 `.workspace = true` 声明依赖，
+> 因此被作为**本 workspace 的成员**直接编译。
 
-接入步骤（任选其一，推荐 A）：
-
-- **A. 作为本仓库 git submodule**（推荐，可独立构建）：
+- 新机器克隆本仓库需带 submodule：
   ```bash
-  git submodule add <eci-gdal.git 地址> crates/eci-gdal
+  git clone --recursive <Water2Rust 地址>
+  # 或克隆后补拉：
   git submodule update --init --recursive
   ```
-  然后在根 `Cargo.toml` 的 `[workspace.dependencies]` 取消 `eci-gdal-*` 注释，路径改为 `crates/eci-gdal/<sub>`。
-- **B. 相对路径引用 AesMetaTool 的 submodule**：先在 `AesMetaTool` 内 `git submodule update --init` 拉取 eci-gdal 源码，再在根 `Cargo.toml` 启用形如 `../AesMetaTool/dev/crates/eci-gdal/<sub>` 的路径依赖（已预置注释模板）。
-
-接入完成后，把对应 crate 的 `eci-gdal-*` workspace 依赖在各 `Cargo.toml` 打开，并将 `water-io` 桩实现替换为真实调用。
+- 已纳入的 eci-gdal 成员（water-io 栅格/投影所需的最小**纯 Rust**集）：`core`、`alg`、`proj`、`geotiff`、`testkit`。
+- **矢量与 GeoPackage 暂缓**：`vector`、`gpkg` 因依赖 SQLite（`libsqlite3-sys`，**唯一允许的 C 豁免**，GeoPackage 是 SQLite 容器，无生产可用纯 Rust 替代）而暂未纳入成员；
+  待落地矢量 IO / fclass 读取 GeoPackage 时再向根 `Cargo.toml` 的 `members` 加入 `crates/eci-gdal/vector` 与 `crates/eci-gdal/gpkg`（届时启用 `rusqlite` bundled，需本机有 C 工具链 / MSVC）。
+- **twe-tile stub**：`proj` 有一个可选依赖 `twe-tile`（`tile` 特性，默认关闭）。Cargo 要求即便关闭的可选 workspace 依赖也必须有定义，故在 `crates/shims/twe-tile` 提供**空 stub** 满足解析。**切勿启用 `proj` 的 `tile` 特性**。
+- **版本对齐**：根 `[workspace.dependencies]` 中 `geo` / `geo-types` 等与 eci-gdal 来源仓库保持同版本，
+  跨 crate 传递几何类型时必须一致；另复刻了 `[patch.crates-io] tiff = tiff-patch`（GeoTIFF 兼容补丁）。
+- **接入后续**：`water-io` 已开启 `eci-gdal-{core,geotiff,proj}` 依赖，下一步把栅格桩实现替换为真实调用。
 
 ### Rust 工具链（前置步骤）
 
 > ⚠️ 当前状态：本机**未检测到 `rustc` / `cargo`**。需先安装工具链才能构建与测试。
+> 因 eci-gdal 各子 crate 为 `edition = "2024"`，**工具链需 Rust ≥ 1.85**。
 
 ```powershell
 # 安装 rustup（默认 stable）
@@ -74,10 +81,11 @@ apps/
     water_api/             # Axum REST API 服务，仿 workshop（tasks/reports/events + SSE）
 crates/
     water-core/            # 共享：错误、配置(settings)、几何与栅格算法(raster_ops)
-    water-io/              # 栅格/矢量 IO，经 eci-gdal（当前为桩实现）
+    water-io/              # 栅格/矢量 IO，经 eci-gdal
     water-fclass/          # 水体 fclass 分类（OSM / GeoPackage 参考）
     water-hydro/           # 水面 DEM 生成（原 hydro 子模块，最大模块）
     water-edge-depth/      # 水边深度导出（原 pipeline.export_water_edge_depth）
+    eci-gdal/              # 纯 Rust GDAL（git submodule，作为 workspace 成员编译）
 ```
 
 ### 与原 Python 模块的能力映射

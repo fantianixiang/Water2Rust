@@ -1,0 +1,14 @@
+[package]
+name = "twe-tile"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+# 空 stub：仅用于满足 eci-gdal `proj` crate 对可选依赖 `twe-tile` 的 workspace 解析。
+# `proj` 的 `tile` 特性在本仓库**永不启用**，因此本 crate 永不参与实际编译/链接。
+# 详见 AGENTS.md「eci-gdal 接入」。
+[lib]
+path = "src/lib.rs"
+
+[dependencies]

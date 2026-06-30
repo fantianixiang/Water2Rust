@@ -2,7 +2,7 @@
 
 将 `MyProject` 的 Python `waters` 模块改造为**纯 Rust** 的水体处理工具链。
 **不依赖** `gdal` / `fiona` / `shapely` 等 Python 第三方库，GIS 底层能力统一经
-[`eci-gdal`](AGENTS.md#eci-gdal-接入前置步骤尚未完成)（纯 Rust GDAL）引入。
+[`eci-gdal`](crates/eci-gdal)（纯 Rust GDAL，git submodule）引入。
 
 > 工作准则与架构规则以 [AGENTS.md](AGENTS.md) 为唯一来源。AI 助手请先读取 AGENTS.md。
 
@@ -24,25 +24,31 @@ apps/
   water_api/         # Axum REST API（默认 127.0.0.1:8000）
 crates/
   water-core/        # 错误 / 配置 / 栅格算法（替代 numpy/scipy/skimage）
-  water-io/          # 栅格·矢量 IO（经 eci-gdal，当前为桩实现）
+  water-io/          # 栅格·矢量 IO（经 eci-gdal）
   water-fclass/      # 水体分类
   water-hydro/       # 水面 DEM 生成
   water-edge-depth/  # 水边深度导出
+  eci-gdal/          # 纯 Rust GDAL（git submodule）
 ```
 
 ## 前置准备
 
-本仓库目前是**骨架阶段**，构建前需完成两项前置步骤（详见 [AGENTS.md](AGENTS.md)）：
+本仓库目前是**骨架阶段**，构建前需完成两项准备（详见 [AGENTS.md](AGENTS.md)）：
 
-1. **安装 Rust 工具链**（本机尚未检测到 `cargo`）：
+1. **拉取 eci-gdal submodule**（纯 Rust GDAL，已作为本仓库 submodule 接入于 `crates/eci-gdal`）：
+
+   ```bash
+   git clone --recursive <Water2Rust 地址>
+   # 或克隆后补拉：
+   git submodule update --init --recursive
+   ```
+
+2. **安装 Rust 工具链**（本机尚未检测到 `cargo`；eci-gdal 为 edition 2024，需 **Rust ≥ 1.85**）：
 
    ```powershell
    winget install Rustlang.Rustup
    rustup default stable
    ```
-
-2. **接入 eci-gdal**（纯 Rust GDAL，当前为 AesMetaTool 的 git submodule、本地无源码）。
-   作为 submodule 接入或相对路径引用，然后在根 `Cargo.toml` 启用 `eci-gdal-*` 依赖。
 
 ## 构建与运行
 
@@ -75,6 +81,7 @@ cargo run --release -p water_api
 ## 改造进度
 
 - [x] 工程骨架 + AGENTS.md / CLAUDE.md + CLI/API 框架
-- [ ] 接入 eci-gdal，落地 `water-io` 真实栅格/矢量 IO
+- [x] 接入 eci-gdal（git submodule，作为 workspace 成员）
+- [ ] 落地 `water-io` 真实栅格/矢量 IO（调用 eci-gdal-geotiff/vector/proj）
 - [ ] `water-core::raster_ops` 数值算法（与 scipy/skimage 对拍）
 - [ ] `water-fclass` / `water-hydro` / `water-edge-depth` 业务逻辑

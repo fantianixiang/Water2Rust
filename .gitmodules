@@ -1,0 +1,3 @@
+[submodule "crates/eci-gdal"]
+	path = crates/eci-gdal
+	url = git@git.51vr.local:neon/TWE/eci-gdal.git

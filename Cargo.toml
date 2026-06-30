@@ -7,9 +7,21 @@ members = [
     "crates/water-fclass",
     "crates/water-hydro",
     "crates/water-edge-depth",
+    # ── eci-gdal（纯 Rust GDAL，git submodule，作为本 workspace 成员嵌入） ──
+    # eci-gdal 顶层无 Cargo.toml，各子 crate 以 `.workspace = true` 声明依赖，
+    # 必须作为父 workspace 成员编译。当前仅纳入 water-io 所需的最小纯 Rust 集合；
+    # 矢量（vector）与 GeoPackage（gpkg）因依赖 SQLite（libsqlite3-sys，唯一 C 豁免），
+    # 推迟到矢量 IO / fclass 里程碑再加入 "crates/eci-gdal/vector" 与 "crates/eci-gdal/gpkg"。
+    "crates/eci-gdal/core",
+    "crates/eci-gdal/alg",
+    "crates/eci-gdal/proj",
+    "crates/eci-gdal/geotiff",
+    "crates/eci-gdal/testkit",
+    # twe-tile 空 stub：仅为满足 proj 可选依赖的解析（详见 AGENTS.md）
+    "crates/shims/twe-tile",
 ]
 default-members = ["apps/water_cli", "apps/water_api"]
-resolver = "2"
+resolver = "3"
 
 [workspace.package]
 version = "0.1.0"
@@ -25,33 +37,59 @@ water-fclass = { path = "crates/water-fclass" }
 water-hydro = { path = "crates/water-hydro" }
 water-edge-depth = { path = "crates/water-edge-depth" }
 
-# ── eci-gdal (纯 Rust GDAL，唯一允许的 GIS 底层入口) ──
-# 注意：eci-gdal 当前为 AesMetaTool 的 git submodule，尚未在本仓库接入。
-# 接入方式见 AGENTS.md「eci-gdal 接入」一节。接入后取消下方注释并按需启用各子 crate。
-# eci-gdal-core    = { path = "../AesMetaTool/dev/crates/eci-gdal/core" }
-# eci-gdal-geotiff = { path = "../AesMetaTool/dev/crates/eci-gdal/geotiff" }
-# eci-gdal-vector  = { path = "../AesMetaTool/dev/crates/eci-gdal/vector" }
-# eci-gdal-proj    = { path = "../AesMetaTool/dev/crates/eci-gdal/proj" }
-# eci-gdal-alg     = { path = "../AesMetaTool/dev/crates/eci-gdal/alg" }
+# ── eci-gdal 子 crate（唯一允许的 GIS 底层入口，路径指向 submodule） ──
+eci-gdal-core = { path = "crates/eci-gdal/core" }
+eci-gdal-alg = { path = "crates/eci-gdal/alg" }
+eci-gdal-proj = { path = "crates/eci-gdal/proj" }
+eci-gdal-geotiff = { path = "crates/eci-gdal/geotiff" }
+eci-gdal-vector = { path = "crates/eci-gdal/vector" }
+eci-gdal-testkit = { path = "crates/eci-gdal/testkit" }
+# twe-tile 空 stub（满足 proj 可选 tile 特性依赖的解析，永不启用）
+twe-tile = { path = "crates/shims/twe-tile" }
 
 # ── 外部共享依赖 ──
-anyhow = "1.0"
+# 版本与特性须与 eci-gdal 来源仓库（AesMetaTool）对齐，
+# 尤其 geo / geo-types，跨 crate 传递几何类型时必须同版本。
+anyhow = "1.0.100"
 thiserror = "2.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "ansi"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["preserve_order"] }
-clap = { version = "4.5", features = ["derive"] }
+clap = { version = "4.5.48", features = ["derive"] }
 rayon = "1.10"
 ndarray = "0.16"
-geo = "0.29"
-geo-types = "0.7"
+geo = "0.28"
+geo-types = "0.7.18"
 rstar = "0.12"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 tokio = { version = "1", features = ["full"] }
 axum = "0.7"
 tower-http = { version = "0.6", features = ["cors", "fs", "trace"] }
+
+# eci-gdal 依赖的外部库（与 AesMetaTool workspace 对齐；未被成员引用者不会编译）
+image = { version = "0.25.6", features = ["png", "jpeg", "webp", "tiff"] }
+tiff = "0.11"
+sha2 = "0.10"
+proj4rs = { version = "0.1.10", features = ["crs-definitions"] }
+proj4wkt = "0.1"
+lru = "0.12"
+memmap2 = "0.9"
+walkdir = "2"
+ruzstd = "0.8"
+geozero = { version = "0.14", default-features = false, features = ["with-wkb", "with-geo", "with-mvt"] }
+shapefile = { version = "0.6", features = ["geo-types"] }
+geojson = { version = "0.24", features = ["geo-types"] }
+wkt = { version = "0.11", features = ["geo-types"] }
+# rusqlite（libsqlite3-sys, bundled）：GeoPackage 读写所需的唯一 C 豁免；
+# 仅 vector / gpkg 成员启用时才编译，当前里程碑未纳入故不编译。
+rusqlite = { version = "0.32", features = ["bundled"] }
+tempfile = "3.23.0"
+
+# tiff 使用 eci-gdal 自带的补丁分支（GeoTIFF 兼容性修复）
+[patch.crates-io]
+tiff = { path = "crates/eci-gdal/tiff-patch" }
 
 # 日常开发测试用：编译快，性能足够
 [profile.release]
