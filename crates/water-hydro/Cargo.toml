@@ -1,0 +1,16 @@
+[package]
+name = "water-hydro"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+water-core.workspace = true
+water-io.workspace = true
+anyhow.workspace = true
+ndarray.workspace = true
+geo.workspace = true
+geo-types.workspace = true
+rstar.workspace = true
+rayon.workspace = true
+tracing.workspace = true

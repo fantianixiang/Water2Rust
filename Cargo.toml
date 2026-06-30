@@ -1,0 +1,65 @@
+[workspace]
+members = [
+    "apps/water_cli",
+    "apps/water_api",
+    "crates/water-core",
+    "crates/water-io",
+    "crates/water-fclass",
+    "crates/water-hydro",
+    "crates/water-edge-depth",
+]
+default-members = ["apps/water_cli", "apps/water_api"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["fantianixiang"]
+
+[workspace.dependencies]
+# ── workspace 内部 crate ──
+water-core = { path = "crates/water-core" }
+water-io = { path = "crates/water-io" }
+water-fclass = { path = "crates/water-fclass" }
+water-hydro = { path = "crates/water-hydro" }
+water-edge-depth = { path = "crates/water-edge-depth" }
+
+# ── eci-gdal (纯 Rust GDAL，唯一允许的 GIS 底层入口) ──
+# 注意：eci-gdal 当前为 AesMetaTool 的 git submodule，尚未在本仓库接入。
+# 接入方式见 AGENTS.md「eci-gdal 接入」一节。接入后取消下方注释并按需启用各子 crate。
+# eci-gdal-core    = { path = "../AesMetaTool/dev/crates/eci-gdal/core" }
+# eci-gdal-geotiff = { path = "../AesMetaTool/dev/crates/eci-gdal/geotiff" }
+# eci-gdal-vector  = { path = "../AesMetaTool/dev/crates/eci-gdal/vector" }
+# eci-gdal-proj    = { path = "../AesMetaTool/dev/crates/eci-gdal/proj" }
+# eci-gdal-alg     = { path = "../AesMetaTool/dev/crates/eci-gdal/alg" }
+
+# ── 外部共享依赖 ──
+anyhow = "1.0"
+thiserror = "2.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "ansi"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", features = ["preserve_order"] }
+clap = { version = "4.5", features = ["derive"] }
+rayon = "1.10"
+ndarray = "0.16"
+geo = "0.29"
+geo-types = "0.7"
+rstar = "0.12"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+tokio = { version = "1", features = ["full"] }
+axum = "0.7"
+tower-http = { version = "0.6", features = ["cors", "fs", "trace"] }
+
+# 日常开发测试用：编译快，性能足够
+[profile.release]
+opt-level = 2
+
+# 正式发布用：最大优化   cargo build --profile prod
+[profile.prod]
+inherits = "release"
+opt-level = 3
+lto = "fat"
+codegen-units = 1

@@ -1,0 +1,19 @@
+[package]
+name = "water-io"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+water-core.workspace = true
+anyhow.workspace = true
+ndarray.workspace = true
+geo-types.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+# ── eci-gdal（接入后取消注释，见 AGENTS.md） ──
+# eci-gdal-core.workspace = true
+# eci-gdal-geotiff.workspace = true
+# eci-gdal-vector.workspace = true
+# eci-gdal-proj.workspace = true

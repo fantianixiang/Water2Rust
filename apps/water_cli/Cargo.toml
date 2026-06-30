@@ -1,0 +1,21 @@
+[package]
+name = "water_cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "water2rust"
+path = "src/main.rs"
+
+[dependencies]
+water-core.workspace = true
+water-io.workspace = true
+water-fclass.workspace = true
+water-hydro.workspace = true
+water-edge-depth.workspace = true
+
+anyhow.workspace = true
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

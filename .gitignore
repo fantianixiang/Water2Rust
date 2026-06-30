@@ -1,0 +1,17 @@
+# Rust
+/target/
+**/target/
+Cargo.lock
+*.pdb
+
+# 输出与临时数据
+/output/
+/tmp/
+*.log
+
+# IDE / OS
+.vscode/*
+!.vscode/settings.json
+.idea/
+.DS_Store
+Thumbs.db
