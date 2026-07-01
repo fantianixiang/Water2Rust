@@ -83,6 +83,13 @@ def main():
     cases.append(med_case("med_s2", [3.0, 1.0, 4.0, 1.0, 5.0], 2))
     cases.append(med_case("med_rand_s3", (rng.standard_normal(40) * 10 + 100).tolist(), 3))
 
+    # 说明：median_filter 含 NaN 的窗口，其结果取决于 scipy C 层 NI_Select（Hoare
+    # 快速选择）内部缓冲区的填充/划分顺序——这是 scipy 的实现定义行为（同一
+    # [a, b, NaN] 三种 NaN 位置可给出不同结果），非函数契约。真实管线中：
+    #   * percentile_filter 恒以 +inf 填充（无 NaN），本文件已直测 0 误差；
+    #   * median_filter 的 NaN 由 _isotonic_multi_peak 端到端对拍覆盖（stage6c_multipeak）。
+    # 故此处不再对人造孤立 NaN 窗口做 bit 级直测，避免锁定 scipy 内部快选位序。
+
     OUT.parent.mkdir(parents=True, exist_ok=True)
     with open(OUT, "w", encoding="utf-8") as f:
         json.dump({"cases": cases}, f)

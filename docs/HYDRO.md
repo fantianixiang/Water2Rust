@@ -172,10 +172,24 @@
   - 秩公式与 scipy `_rank_filter` 一致（percentile：`int(fs*p/100)`，100 时 `fs-1`；median：`fs//2`）；mode='reflect'。
   - 测试 [stage6c_rankfilter_parity.rs](../crates/water-hydro/tests/stage6c_rankfilter_parity.rs)：10 例（含 +inf 填充 / 多 size / 多 percentile）**0 误差**（秩选择取同一顺序统计量）。
 
+### 阶段 6c 原语：find_peaks + 多峰等渗回归 ✅（已对拍）
+
+河流纵剖面按「峰-谷」分段做等渗拟合，需先做峰检测。
+
+- **峰检测（含显著度）**：[crates/water-core/src/find_peaks.rs](../crates/water-core/src/find_peaks.rs)
+  `find_peaks_prominence`
+  - 对应 Python：`scipy.signal.find_peaks(x, prominence=...)`（复刻 `_local_maxima_1d` 平顶取中 + `_peak_prominences` 显著度）。
+  - 测试 [stage6c_findpeaks_parity.rs](../crates/water-hydro/tests/stage6c_findpeaks_parity.rs)：10 例（含平顶 / 单调 / NaN / 随机）峰下标**逐个精确**，显著度最大误差 **2.42e-13**。
+- **多峰等渗回归**：[crates/water-hydro/src/skeleton_zloc.rs](../crates/water-hydro/src/skeleton_zloc.rs)
+  `isotonic_multi_peak`
+  - 对应 Python：`hydro_skeleton_zloc.py::_isotonic_multi_peak`（median_filter 轻度平滑 → find_peaks 找显著峰 → 端点+峰为锚点分段 → 段内峰→谷非增 / 谷→峰非减）。
+  - 组合了 median_filter、find_peaks、isotonic 三原语。
+  - 测试 [stage6c_multipeak_parity.rs](../crates/water-hydro/tests/stage6c_multipeak_parity.rs)：9 例（含 NaN / 多峰 / 河道形 / 随机）**0 误差**——同时作为 `median_filter` 含 NaN 的权威端到端对拍证据。
+
 ### 后续阶段（待实现，逐一对拍）
 
 - [ ] 阶段 6c：河流 z_local 管线剩余——骨架沿流排序 / 切线 / junction 检测、
-      横断面 bank 扫描 z、`find_peaks` + `_isotonic_multi_peak`，最终 `solve_laplace_per_polygon`（岸线环 + 河心 pin 作 Dirichlet）
+      横断面 bank 扫描 z，最终 `solve_laplace_per_polygon`（岸线环 + 河心 pin 作 Dirichlet）
 - [ ] 阶段 7：CRS 解析 + 重投影（工作 CRS ↔ 源网格）
 - [ ] 阶段 8：ROI/瓦片流水线与并行
 - [ ] 阶段 9：端到端在林芝真实数据上与 Python 整体对拍
