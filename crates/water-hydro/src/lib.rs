@@ -18,6 +18,9 @@ use std::path::Path;
 use water_core::{error::WaterError, settings::HydroSettings, Result};
 
 pub mod laplace;
+pub mod lake;
+pub mod output;
+pub mod postprocess;
 
 /// 水面 DEM 输出组合模式。对应 `WATER_OUTPUT_MODES`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
