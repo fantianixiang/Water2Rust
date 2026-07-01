@@ -14,11 +14,9 @@ use ndarray::Array2;
 use water_io::raster::rasterize_polygon_mask;
 
 use crate::lake_flatten::{flatten_lake_polygons_on_surface, is_lake_fclass};
-use crate::output::{compose_water_output_array, ComposeMetrics};
 use crate::postprocess::apply_river_dem_floor_lift;
 use crate::river_solve::solve_river_polygon_surface;
 use crate::skirt::apply_water_surface_skirt;
-use crate::OutputMode;
 
 /// 由几何 bounds 计算像素窗口（对应 `_window_from_geometry_bounds` + rasterio `from_bounds`）。
 ///
@@ -124,10 +122,13 @@ where
     surface
 }
 
-/// 端到端内存水面：河流求解 → 湖泊压平 → 河床抬升 → 输出组合。
+/// 端到端内存水面：河流求解 → 湖泊压平 → 河床抬升 → 裙边。
 ///
-/// 对应 `generate_hydro_water_dem` 中「已在工作 CRS 网格上」的算法段（不含 CRS/瓦片/IO）。
-/// 返回 `(output_surface, metrics)`。
+/// 对应 `generate_hydro_water_dem` 中「已在工作 CRS 网格上」的算法段（不含 CRS/瓦片/IO/组合）。
+/// 返回 `(surface, output_mask)`：`surface` 为工作网格水面（含裙边，非水像素为 NaN），
+/// `output_mask` 为水面写入掩膜（含裙边）。**不在此组合 DEM 背景**——调用方（pipeline）
+/// 只把 `surface`+`output_mask` 投回源网格，再与**精确源 DEM** 组合（见 `pipeline.rs` 步骤 9
+/// 及 docs/HYDRO.md「背景 DEM 处理」）。
 #[allow(clippy::too_many_arguments)]
 pub fn compute_water_surface<F>(
     transform: &[f64; 6],
@@ -135,10 +136,9 @@ pub fn compute_water_surface<F>(
     water_polygons: &[Polygon<f64>],
     water_fclass: &[Option<String>],
     all_touched: bool,
-    output_mode: OutputMode,
     skirt_pixels: usize,
     tiebreaker_for: F,
-) -> (Array2<f32>, ComposeMetrics)
+) -> (Array2<f32>, Array2<bool>)
 where
     F: Fn(usize, usize) -> Vec<usize>,
 {
@@ -207,8 +207,6 @@ where
     let mut output_mask = write_mask.clone();
     apply_water_surface_skirt(&mut surface, &mut output_mask, &dem_f32, skirt_pixels);
 
-    // 7) 输出组合（写入掩膜含裙边）。
-    let (output, metrics) =
-        compose_water_output_array(&dem_f32, &surface, &output_mask, output_mode);
-    (output, metrics)
+    // 返回工作网格水面 + 写入掩膜（组合交给调用方，在源网格上用精确源 DEM）。
+    (surface, output_mask)
 }

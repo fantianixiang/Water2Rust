@@ -21,7 +21,7 @@ use water_core::Result;
 
 use crate::crs::{proj_from_epsg, reproject_polygon, resolve_working_crs};
 use crate::river_pipeline::compute_water_surface;
-use crate::HydroJob;
+use crate::{HydroJob, OutputMode};
 
 /// 输出阶段裙边带宽（Python `HYDRO_WATER_SKIRT_PIXELS`，模块常量）。
 const HYDRO_WATER_SKIRT_PIXELS: usize = 5;
@@ -184,21 +184,30 @@ pub fn run_hydro_pipeline(job: &HydroJob) -> Result<()> {
     )?;
     let dem_work = dem_work_f32.mapv(|v| v as f64);
 
-    // 8) 工作网格水面（含裙边）。生产用恒等置换作为 medial_axis tiebreaker。
-    let (out_work, _metrics) = compute_water_surface(
+    // 8) 工作网格水面 + 写入掩膜（含裙边）。生产用恒等置换作为 medial_axis tiebreaker。
+    let (surface_work, mask_work) = compute_water_surface(
         &warp.transform,
         &dem_work,
         &polys_target,
         &fclass,
         job.all_touched,
-        job.output_mode,
         HYDRO_WATER_SKIRT_PIXELS,
         |_idx, n| (0..n).collect::<Vec<usize>>(),
     );
 
-    // 9) 重投影回源 ROI 网格（双线性；工作网格 NaN 视为无效）。
-    let out_src = reproject_with_max_error(
-        &out_work,
+    // 9) 只把水面 + 掩膜投回源 ROI 网格（B 方案）。
+    //    背景 DEM **不重采样**：非水像素直接用精确源 DEM（下一步组合），
+    //    避免 Python「工作网格组合后整体投回」带来的双重重采样 + GDAL 分块伪影
+    //    （详见 docs/HYDRO.md「背景 DEM 处理（方案 B）」）。
+    let masked_surface = Array2::from_shape_fn(surface_work.dim(), |(r, c)| {
+        if mask_work[(r, c)] {
+            surface_work[(r, c)]
+        } else {
+            f32::NAN
+        }
+    });
+    let surf_src = reproject_with_max_error(
+        &masked_surface,
         warp.transform,
         target_epsg,
         None,
@@ -209,9 +218,32 @@ pub fn run_hydro_pipeline(job: &HydroJob) -> Result<()> {
         Resampling::Bilinear,
         GDAL_WARP_MAX_ERROR,
     )?;
+    let mask_f32 = mask_work.mapv(|b| if b { 1.0f32 } else { 0.0f32 });
+    let mask_src = reproject_with_max_error(
+        &mask_f32,
+        warp.transform,
+        target_epsg,
+        None,
+        src_win_t,
+        ww as usize,
+        hh as usize,
+        src_epsg,
+        Resampling::Nearest,
+        GDAL_WARP_MAX_ERROR,
+    )?;
 
-    // 10) NaN → nodata，写 ROI 范围 GeoTIFF（源 CRS）。
-    let out_final: Array2<f32> = out_src.mapv(|v| if v.is_finite() { v } else { OUTPUT_NODATA as f32 });
+    // 10) 源网格组合：水像素用投回水面；其余按模式用**精确源 DEM** 或 nodata。写 ROI GeoTIFF。
+    let with_dem = matches!(job.output_mode, OutputMode::WaterSurfaceWithDem);
+    let out_final = Array2::from_shape_fn((hh as usize, ww as usize), |(r, c)| {
+        let is_water = mask_src[(r, c)] >= 0.5 && surf_src[(r, c)].is_finite();
+        if is_water {
+            surf_src[(r, c)]
+        } else if with_dem && dem_src[(r, c)].is_finite() {
+            dem_src[(r, c)]
+        } else {
+            OUTPUT_NODATA as f32
+        }
+    });
     let is_geo = proj_from_epsg(src_epsg)?.is_latlong();
     write_geotiff_f32(&job.output_path, &out_final, src_win_t, src_epsg, is_geo, Some(OUTPUT_NODATA))?;
     Ok(())

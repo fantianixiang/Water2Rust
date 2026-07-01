@@ -273,3 +273,67 @@
 - [ ] 阶段 7：CRS 解析 + 重投影（工作 CRS ↔ 源网格）
 - [ ] 阶段 8：ROI/瓦片流水线与并行
 - [ ] 阶段 9：端到端在林芝真实数据上与 Python 整体对拍
+
+## 端到端编排与三个关键工程决策
+
+端到端管线：[crates/water-hydro/src/pipeline.rs](../crates/water-hydro/src/pipeline.rs)
+`run_hydro_pipeline`（读矢量 → DEM 元数据 → 工作 CRS → 几何投影 → ROI 窗口 → 读 ROI 原始 DEM →
+warp 到工作网格 → `compute_water_surface` → 投回源网格 → 组合写出）。
+
+在林芝真实数据（DEM 26492×18138 EPSG:4326；水体 `result.shp` 41 多边形）上与 Python
+`generate_hydro_water_dem` 逐像素对拍时，定位并处理了三个关键问题，逐一记录如下。
+
+### 决策 1：DEM warp 重投影 —— 复刻 GDAL 近似变换器（bit 级一致）
+
+- **现象**：Rust 精确逐像素 PROJ 重投影，与 Python(rasterio) 输出在陡坡处差最大 5.14m、均值 0.28m。
+- **根因（决定性证据）**：
+  - 我的工作网格 transform 与 rasterio `calculate_default_transform` **逐位一致**；
+  - 我的双线性重采样 == 精确逐像素 pyproj + `scipy.ndimage.map_coordinates` 到 **0.0002m**（我方精确）；
+  - `gdal.Warp(errorThreshold=0)`（关闭近似）== 我方精确（0.0005m）；`errorThreshold=0.125`（**GDAL 默认**）差 5.14m；
+  - 即 Python 参照用了 **GDAL 默认的 0.125 像素多项式近似变换器**（`GDALApproxTransform`），我方为精确。
+- **决策（用户拍板，仅重构 → 与旧参照一致 + 更快）**：忠实复刻 GDAL `GDALApproxTransform` 的递归仿射细分算法，
+  见 [crates/water-io/src/warp_approx.rs](../crates/water-io/src/warp_approx.rs)。逐目标行细分为若干段，
+  每段两端精确变换、线性插值，段中点曼哈顿误差 ≤ `max_error`(0.125) 即接受，否则递归。
+- **证据**：Rust 近似重投影 == `gdal.Warp(errorThreshold=0.125)` 到 **0.00024m**（bit 级）。
+  管线 DEM warp 用 `max_error=0.125`；`reproject(max_error=0)` 仍为精确路径（既有精确测试不变）。
+
+### 决策 2：`medial_axis` 随机 tiebreaker —— 需固定为确定性顺序
+
+- **现象**：即便 warp 已 bit 级一致，水面在骨架附近仍差最大 18–23m、均值 0.46m。
+- **根因**：skimage 0.25 `medial_axis(image, *, rng=None)`，hydro 调用时 `rng=None` ⇒ **每次运行用随机
+  tiebreaker**（`np.random.default_rng().permutation`）打破距离/cornerness 相等像素的处理顺序，
+  从而**骨架本身不可复现**。实测同输入仅换种子，Python 两次运行水面即差最大 11.8m、p99 3.66m（不可约随机）。
+- **决策**：Rust `water_core::medial_axis(mask, tiebreaker)` 接收**显式 tiebreaker**，采用确定性 identity
+  顺序（`0..n`，行主序 fg 秩）。对拍时把 Python `medial_axis` 也改为同一 identity tiebreaker
+  （见 [scripts/run_py_hydro_seed.py](../scripts/run_py_hydro_seed.py) `deterministic_medial_axis`）。
+- **证据**：两边同用 identity tiebreaker 后，水体像素 Rust vs Python **max 0.65m、mean 0.012m、p99 0.117m、
+  中位 0.004m**——由随机导致的米级差异全部消除。骨架算法本身早已 value-exact
+  （[stage6b_medial_parity.rs](../crates/water-hydro/tests/stage6b_medial_parity.rs) 注入同 tiebreaker 逐像素相等）。
+
+### 决策 3：背景 DEM 处理 —— 方案 B「精确源 DEM 背景」（不重采样）
+
+- **背景**：`water_surface_with_dem` 模式下，输出的非水像素为 DEM「直通」背景。Python 的做法是先在
+  **工作网格**上组合 `DEM_work + 水面`，再把整幅组合结果经 GDAL warp **投回源网格**——因此 Python 的背景是
+  **双重重采样**（源 DEM → 工作 UTM → 投回源）的结果。
+- **为何不 bit 匹配 Python 背景**（已证明不可行）：该双重重采样值依赖 **GDAL warp 的内部分块**——
+  - `warp_mem_limit` 不同即结果不同（mem1 vs mem256 差 **5.96m**）；
+  - GDAL 默认（=单块）的分块**既非 ROI 窗口宽、也非整幅行宽**（huge vs 窗口差 6.1m、vs 整行宽差 5.6m），
+    而是其内部用 21 点边采样算出的包围盒，纯 Rust 无法稳定复刻；
+  - 即 Python 背景是**不稳定的 GDAL 实现伪影**（非算法逻辑），bit 匹配既不可行也无意义。
+- **决策（用户拍板：方案 B）**：**只把水面 + 掩膜投回源网格，背景直接用未重采样的精确源 DEM**。
+  见 [pipeline.rs](../crates/water-hydro/src/pipeline.rs) 步骤 8–10：
+  1. `compute_water_surface` 只产**工作网格水面 + 写入掩膜**（不组合 DEM）；
+  2. `masked_surface`（掩膜内水面、掩膜外 NaN）双线性投回源 ROI；掩膜最近邻投回；
+  3. 源网格组合：水像素用投回水面，其余用**精确源 DEM**（`read_window_f32` 读的原值），否则 nodata。
+- **相对 Python 的差异与取舍**：
+  - 水面像素：**不受影响**，仍为决策 2 的 parity（max 0.65m）；
+  - 背景像素：本实现 == **精确源 DEM**（对源 DEM 窗口 **p50=0**），比 Python「被 GDAL 模糊过的双重重采样」
+    背景**更锐利、更正确、完全确定**，且省一次全图反投影（更快）；
+  - 与 Python 背景的中位差约 **0.33m**，即 Python 双重重采样引入的模糊量——本方案**有意避免**之。
+- **一句话**：方案 B 使非水区严格等于原始 DEM（第一性原理正确 + 确定 + 更快），代价是与旧 Python 参照
+  被 GDAL 模糊过的背景相差约 0.33m 中位；水面本身与 Python（固定种子）为 parity。
+
+> **对拍脚本**：[scripts/run_py_hydro_seed.py](../scripts/run_py_hydro_seed.py)（固定 `medial_axis` 种子 /
+> identity，并猴子补丁绕过本机 `rasterio.windows.from_bounds` 的 PROJ 原生崩溃，端到端跑出确定性 Python 参照）；
+> 逐像素对拍见对应 `scripts/` 分析脚本。
+

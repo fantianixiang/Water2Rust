@@ -18,3 +18,12 @@ print('WATER  n', int(m.sum()), 'max', round(float(d[m].max()), 4),
       'mean', round(float(d[m].mean()), 5), 'p99', round(float(np.percentile(d[m], 99)), 4))
 print('BKGND  n', int(b.sum()), 'max', round(float(d[b].max()), 4),
       'mean', round(float(d[b].mean()), 5), 'p99', round(float(np.percentile(d[b], 99)), 4))
+
+# 水体内部（腐蚀 3px，去掉岸线/裙边亚像素效应）。
+from scipy.ndimage import binary_erosion
+inner = binary_erosion(mask, iterations=3) & both
+edge = m & ~inner
+print('WATER内部 n', int(inner.sum()), 'max', round(float(d[inner].max()), 4),
+      'mean', round(float(d[inner].mean()), 5), 'p99', round(float(np.percentile(d[inner], 99)), 4))
+print('WATER岸边 n', int(edge.sum()), 'max', round(float(d[edge].max()), 4),
+      'mean', round(float(d[edge].mean()), 5), 'p99', round(float(np.percentile(d[edge], 99)), 4))
