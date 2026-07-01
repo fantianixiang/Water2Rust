@@ -10,11 +10,13 @@
 //! 而非普通排序——对**全有限值窗口**两者结果一致（同一顺序统计量），但 `NI_Select`
 //! 更快且与 scipy 走同一路径。
 //!
-//! **NaN 语义（实现定义）**：当窗口含 NaN 时，`NI_Select` 的结果依赖 scipy C 层内部
-//! 缓冲区的填充/划分顺序（同一 `[a, b, NaN]` 三种 NaN 位置可给出不同结果），这是 scipy
-//! 的实现定义行为、非函数契约。真实管线不受影响：`percentile_filter` 恒以 +inf 填充
+//! **NaN 语义（scipy 实现定义，已核对 C 源 `ni_filters.c`）**：`NI_RankFilter` 把窗口值按
+//! `_offsets[]` 顺序填入 buffer，再调 `NI_Select`。因 NaN 参与的 `>`/`<` 比较全为 false，
+//! quickselect 的划分路径依赖 NaN 在 buffer 中的位置，可能选中 NaN 也可能选中有限值
+//! （同一 `[a, b, NaN]` 三种 NaN 位置结果不同）——这是 quickselect + IEEE-754 的产物，
+//! scipy 未定义"含 NaN 的中位数"。真实管线不受影响：`percentile_filter` 恒以 +inf 填充
 //! （无 NaN，已 0 误差直测）；`median_filter` 的 NaN 由 `_isotonic_multi_peak` 端到端对拍
-//! （`stage6c_multipeak`）覆盖。故不对人造孤立 NaN 窗口做 bit 级断言。
+//! （`stage6c_multipeak`，0 误差）覆盖。故不对人造孤立 NaN 窗口做 bit 级断言。
 //! 窗口为边长 `size` 的方框，相对偏移 `[-size/2, size-1-size/2]`（origin=0）。
 
 use ndarray::Array2;

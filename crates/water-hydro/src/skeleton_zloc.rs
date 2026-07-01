@@ -150,3 +150,99 @@ pub fn isotonic_multi_peak(z_cross: &[f64]) -> Vec<f64> {
     }
     z_fit
 }
+
+/// 骨架像素坐标 (row, col)。
+pub type Pixel = (i64, i64);
+
+/// 沿有序骨架路径的局部切线（对应 Python `_compute_skeleton_tangents`）。
+///
+/// 以 `±context_pixels` 做有限差分，但遇到相邻跳变 `>sqrt(2)`（平方 `>2.5`）即停止扩展，
+/// 使切线保持"空间局部"而非"列表局部"——分支拼接处的跳变不会把切线拉过多边形。
+/// 返回每个像素的单位切线 `[row_dir, col_dir]`；退化时取 `[0, 1]`。
+pub fn compute_skeleton_tangents(ordered_pixels: &[Pixel], context_pixels: usize) -> Vec<[f64; 2]> {
+    let n = ordered_pixels.len();
+    let mut tangents = vec![[0.0f64, 0.0f64]; n];
+    const JUMP_SQ: i64 = 2; // 平方 > 2.5 ⟺ 整数平方 ≥ 3，即 > 2
+
+    let jump = |a: Pixel, b: Pixel| -> bool {
+        let d = (b.0 - a.0) * (b.0 - a.0) + (b.1 - a.1) * (b.1 - a.1);
+        d > JUMP_SQ // 连续 8 邻域 ≤ 2；跳变 > 2.5 ⟺ 整数平方 > 2
+    };
+
+    for i in 0..n {
+        // 向后走，遇跳变即停。对应 range(i, max(0, i-ctx), -1)。
+        let mut i_back = i;
+        let lower = i.saturating_sub(context_pixels);
+        let mut k = i;
+        while k > lower {
+            if jump(ordered_pixels[k - 1], ordered_pixels[k]) {
+                break;
+            }
+            i_back = k - 1;
+            k -= 1;
+        }
+        // 向前走，遇跳变即停。对应 range(i, min(n-1, i+ctx))。
+        let mut i_fwd = i;
+        let upper = std::cmp::min(n.saturating_sub(1), i + context_pixels);
+        let mut k = i;
+        while k < upper {
+            if jump(ordered_pixels[k], ordered_pixels[k + 1]) {
+                break;
+            }
+            i_fwd = k + 1;
+            k += 1;
+        }
+        if i_back == i_fwd {
+            tangents[i] = [0.0, 1.0];
+            continue;
+        }
+        let (r_back, c_back) = ordered_pixels[i_back];
+        let (r_fwd, c_fwd) = ordered_pixels[i_fwd];
+        let dr = (r_fwd - r_back) as f64;
+        let dc = (c_fwd - c_back) as f64;
+        let length = (dr * dr + dc * dc).sqrt();
+        if length < 1e-12 {
+            tangents[i] = [0.0, 1.0];
+        } else {
+            tangents[i] = [dr / length, dc / length];
+        }
+    }
+    tangents
+}
+
+/// 标记位于汇流区的骨架站点（对应 Python `_detect_junction_stations`）。
+///
+/// 若某站点在 `radius_px`（2D 像素欧氏距离）内存在另一站点，其切线与本站点切线的
+/// 点积绝对值 `< angle_cos_threshold`（即夹角 > acos(threshold)，默认 60°），则判为
+/// 汇流站点——分支交汇处各臂的骨架像素聚集但切线各指其臂，产生交叉"扇形"。
+///
+/// 切线沿直线方向符号任意，故用点积绝对值。半径查询与 `cKDTree.query_ball_point`
+/// 一致（欧氏距离 `<= radius_px`，含端点、跳过自身）。
+pub fn detect_junction_stations(
+    ordered_pixels: &[Pixel],
+    tangents: &[[f64; 2]],
+    radius_px: f64,
+    angle_cos_threshold: f64,
+) -> Vec<bool> {
+    let n = ordered_pixels.len();
+    let mut is_junction = vec![false; n];
+    for i in 0..n {
+        let (ri, ci) = ordered_pixels[i];
+        for j in 0..n {
+            if j == i {
+                continue;
+            }
+            let (rj, cj) = ordered_pixels[j];
+            let d2 = ((rj - ri) * (rj - ri) + (cj - ci) * (cj - ci)) as f64;
+            if d2.sqrt() > radius_px {
+                continue;
+            }
+            let cos_angle = tangents[i][0] * tangents[j][0] + tangents[i][1] * tangents[j][1];
+            if cos_angle.abs() < angle_cos_threshold {
+                is_junction[i] = true;
+                break;
+            }
+        }
+    }
+    is_junction
+}

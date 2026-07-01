@@ -186,10 +186,18 @@
   - 组合了 median_filter、find_peaks、isotonic 三原语。
   - 测试 [stage6c_multipeak_parity.rs](../crates/water-hydro/tests/stage6c_multipeak_parity.rs)：9 例（含 NaN / 多峰 / 河道形 / 随机）**0 误差**——同时作为 `median_filter` 含 NaN 的权威端到端对拍证据。
 
+### 阶段 6c 原语：骨架切线 + 汇流站点检测 ✅（已对拍）
+
+- **切线**：[crates/water-hydro/src/skeleton_zloc.rs](../crates/water-hydro/src/skeleton_zloc.rs) `compute_skeleton_tangents`
+  - 对应 Python：`_compute_skeleton_tangents`（沿有序路径 ±context 有限差分，相邻跳变 `>sqrt(2)` 即停）。
+- **汇流站点**：`detect_junction_stations`
+  - 对应 Python：`_detect_junction_stations`（`radius_px=4` 内他站切线与本站切线点积绝对值 `<0.5` → 汇流；cKDTree 半径查询→暴力等价）。
+- 测试 [stage6c_skeleton_geom_parity.rs](../crates/water-hydro/tests/stage6c_skeleton_geom_parity.rs)：8 例（直线/对角/L 拐/分支跳变/T 汇流/短路径）切线 **0 误差**，汇流掩膜**完全一致**。
+
 ### 后续阶段（待实现，逐一对拍）
 
-- [ ] 阶段 6c：河流 z_local 管线剩余——骨架沿流排序 / 切线 / junction 检测、
-      横断面 bank 扫描 z，最终 `solve_laplace_per_polygon`（岸线环 + 河心 pin 作 Dirichlet）
+- [ ] 阶段 6c：河流 z_local 管线剩余——骨架沿流排序（`_order_skeleton_pixels_along_flow` + 骨架图构建）、
+      横断面 bank 扫描 z（`_cross_section_z_at_skeleton_pixels`），最终 `solve_laplace_per_polygon`（岸线环 + 河心 pin 作 Dirichlet）
 - [ ] 阶段 7：CRS 解析 + 重投影（工作 CRS ↔ 源网格）
 - [ ] 阶段 8：ROI/瓦片流水线与并行
 - [ ] 阶段 9：端到端在林芝真实数据上与 Python 整体对拍
