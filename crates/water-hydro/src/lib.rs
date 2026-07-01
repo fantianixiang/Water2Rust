@@ -25,6 +25,7 @@ pub mod postprocess;
 pub mod cross_section;
 pub mod skeleton_graph;
 pub mod skeleton_zloc;
+pub mod river_zsmooth;
 pub mod river_solve;
 pub mod river_pipeline;
 
