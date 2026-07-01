@@ -194,10 +194,19 @@
   - 对应 Python：`_detect_junction_stations`（`radius_px=4` 内他站切线与本站切线点积绝对值 `<0.5` → 汇流；cKDTree 半径查询→暴力等价）。
 - 测试 [stage6c_skeleton_geom_parity.rs](../crates/water-hydro/tests/stage6c_skeleton_geom_parity.rs)：8 例（直线/对角/L 拐/分支跳变/T 汇流/短路径）切线 **0 误差**，汇流掩膜**完全一致**。
 
+### 阶段 6c 原语：骨架图构建 + 沿流排序 ✅（已对拍）
+
+- Rust：[crates/water-hydro/src/skeleton_graph.rs](../crates/water-hydro/src/skeleton_graph.rs)
+  `build_skeleton_graph` / `bfs_distance_to_outlet` / `normalise_branch_directions` / `order_skeleton_pixels_along_flow`
+- 对应 Python：`skeleton_dryrun.py`（图构建）+ `hydro_skeleton_zloc.py::_order_skeleton_pixels_along_flow`
+- 实现：度图 → 端点/交汇为节点（行主序索引）→ 沿度 2 像素走支 → 出水口=DEM 最低端点 →
+  树边 BFS 定序 → 支按到出水口距离稳定排序 → 去重收集，出水口在前。
+- 测试 [stage6c_skeleton_order_parity.rs](../crates/water-hydro/tests/stage6c_skeleton_order_parity.rs)：5 例（出水口左/右、Y 分叉、L 拐、短路径）排序**完全一致**。
+
 ### 后续阶段（待实现，逐一对拍）
 
-- [ ] 阶段 6c：河流 z_local 管线剩余——骨架沿流排序（`_order_skeleton_pixels_along_flow` + 骨架图构建）、
-      横断面 bank 扫描 z（`_cross_section_z_at_skeleton_pixels`），最终 `solve_laplace_per_polygon`（岸线环 + 河心 pin 作 Dirichlet）
+- [ ] 阶段 6c：河流 z_local 管线剩余——横断面 bank 扫描 z（`_cross_section_z_at_skeleton_pixels`
+      + `_trace_ray_to_boundary`），最终 `solve_laplace_per_polygon`（岸线环 + 河心 pin 作 Dirichlet）
 - [ ] 阶段 7：CRS 解析 + 重投影（工作 CRS ↔ 源网格）
 - [ ] 阶段 8：ROI/瓦片流水线与并行
 - [ ] 阶段 9：端到端在林芝真实数据上与 Python 整体对拍

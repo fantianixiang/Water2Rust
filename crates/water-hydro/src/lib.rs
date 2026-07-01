@@ -22,6 +22,7 @@ pub mod lake;
 pub mod lake_flatten;
 pub mod output;
 pub mod postprocess;
+pub mod skeleton_graph;
 pub mod skeleton_zloc;
 
 /// 水面 DEM 输出组合模式。对应 `WATER_OUTPUT_MODES`。
