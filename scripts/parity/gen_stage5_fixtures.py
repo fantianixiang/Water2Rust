@@ -44,12 +44,15 @@ def rasterize_cases() -> list[dict]:
     def c(name, h, w, poly: Polygon):
         mask = rasterize([(poly, 1)], out_shape=(h, w), transform=TRANSFORM,
                          fill=0, all_touched=False, dtype="uint8")
+        mask_true = rasterize([(poly, 1)], out_shape=(h, w), transform=TRANSFORM,
+                              fill=0, all_touched=True, dtype="uint8")
         ext = [[float(x), float(y)] for x, y in poly.exterior.coords]
         interiors = [[[float(x), float(y)] for x, y in ring.coords] for ring in poly.interiors]
         out.append({"name": name, "h": h, "w": w,
                     "transform": [A, B, C, D, E, F],
                     "exterior": ext, "interiors": interiors,
-                    "mask": [int(v) for v in mask.flatten()]})
+                    "mask": [int(v) for v in mask.flatten()],
+                    "mask_true": [int(v) for v in mask_true.flatten()]})
 
     # 矩形
     c("rect", 20, 24, poly_from_pixel_ring([(3, 3), (18, 3), (18, 15), (3, 15), (3, 3)]))

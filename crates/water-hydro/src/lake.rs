@@ -113,7 +113,7 @@ fn polygon_local_mask(
     let (h, w) = dem.dim();
     let (col_off, row_off, col_end, row_end, lt) = local_window(polygon, transform, h, w)?;
     let (lw, lh) = ((col_end - col_off) as u32, (row_end - row_off) as u32);
-    let mask = rasterize_polygon_mask(polygon, &lt, lw, lh);
+    let mask = rasterize_polygon_mask(polygon, &lt, lw, lh, false);
     if !mask.iter().any(|&b| b) {
         return None;
     }

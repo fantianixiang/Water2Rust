@@ -84,7 +84,14 @@
     每多边形容许 ≤1 个边界像素、占比 < 0.5%。rasterio 在世界坐标做扫描线、eci-gdal 在像素坐标做，
     代数等价但 ~1e-13 舍入在压边处会翻转一个边界像素；对水面掩膜物理影响可忽略（连不同 GDAL 版本亦有此差异）。
   - 测试：[crates/water-hydro/tests/stage5_parity.rs](../crates/water-hydro/tests/stage5_parity.rs)
-  - 待补：`all_touched=True`（eci-gdal 未提供，floor-lift/laplace 掩膜需要）；完整湖泊常数水位/floor-lift 的多边形→掩膜组装。
+- **多边形栅格化(all_touched=True)**：[crates/water-io/src/raster.rs](../crates/water-io/src/raster.rs) `rasterize_polygon_mask(.., all_touched=true)`
+  - eci-gdal 不提供 all_touched=True。**GeoRust 调研**：`geo-rasterize` 是 GDAL 直接移植（匹配 ALL_TOUCHED=TRUE），
+    但其依赖 `geo ^0.18` / `ndarray ^0.15` / `euclid ^0.22`，接入会引入重复旧版本，与 AGENTS「最小依赖」冲突。
+  - 按 AGENTS 核心第一定律「参考 GDAL 源码以纯 Rust 补齐」：**忠实移植 GDAL `alg/llrasterize.cpp` 的
+    `GDALdllImageLineAllTouched`**（含 `bIntersectOnly=TRUE` 对轴对齐整数边的 EPSILON 跳过，gdal #7523/#6414），
+    与 eci-gdal 的内部填充求并即得 GDAL `ALL_TOUCHED=TRUE`。
+  - 关键细节：世界→像素坐标采用 GDAL 逆地理变换的**求值顺序** `(-c/a)+x*(1/a)`，避免 `(x-c)/a` 在整数顶点处因舍入落到 1.999…。
+  - **对拍证据**：5 多边形（rect/triangle/pentagon/rect_with_hole/slanted）与 rasterio(all_touched=True) **全部逐像素 0 不一致**（含分数斜边）。
 
 ### 输入检查（按需求新增）
 
@@ -106,8 +113,8 @@
 
 ### 后续阶段（待实现，逐一对拍）
 
-- [ ] 阶段 5 再续：`rasterize(all_touched=True)`（floor-lift/laplace 掩膜需要）+ 完整 `_compute_lake_constant_z_for_polygon`
-      分层选择 + `_flatten_lake_polygons_on_surface` 把常数水位盖回求解面
+- [ ] 阶段 5 再续：完整 `_compute_lake_constant_z_for_polygon` 分层选择
+      + `_flatten_lake_polygons_on_surface` 把常数水位盖回求解面（现栏格化两种 all_touched 均已就绪）
 - [ ] 阶段 6：骨架/中轴与河心线 z（`medial_axis` / 横断面 / isotonic）
 - [ ] 阶段 7：CRS 解析 + 重投影（工作 CRS ↔ 源网格）
 - [ ] 阶段 8：ROI/瓦片流水线与并行

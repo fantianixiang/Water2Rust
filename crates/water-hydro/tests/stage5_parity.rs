@@ -64,7 +64,7 @@ fn rasterize_matches_rasterio() {
             .collect();
         let polygon = Polygon::new(exterior, interiors);
 
-        let got = rasterize_polygon_mask(&polygon, &transform, w as u32, h as u32);
+        let got = rasterize_polygon_mask(&polygon, &transform, w as u32, h as u32, false);
         let expected = bool_grid(case["mask"].as_array().unwrap(), h, w);
 
         let mut mismatch = 0usize;
@@ -88,6 +88,28 @@ fn rasterize_matches_rasterio() {
             "rasterize {name} 不一致 {mismatch}/{total} 超出容差(≤1 且 <0.5%)"
         );
         total_mismatch += mismatch;
+
+        // all_touched=True：GDAL LineAllTouched 边界层，与 rasterio(all_touched=True) 对拍
+        let got_true = rasterize_polygon_mask(&polygon, &transform, w as u32, h as u32, true);
+        let expected_true = bool_grid(case["mask_true"].as_array().unwrap(), h, w);
+        let mut mismatch_true = 0usize;
+        for r in 0..h {
+            for c in 0..w {
+                if got_true[(r, c)] != expected_true[(r, c)] {
+                    mismatch_true += 1;
+                }
+            }
+        }
+        let frac_true = mismatch_true as f64 / total as f64;
+        println!(
+            "rasterize {name} [all_touched]: 不一致像素 {mismatch_true}/{total} ({:.4}%)",
+            100.0 * frac_true
+        );
+        // all_touched=True 边界层覆盖了填充的压边 tie-break，实测与 rasterio 精确一致。
+        assert!(
+            mismatch_true == 0,
+            "rasterize {name} [all_touched] 与 rasterio 不一致 {mismatch_true}/{total}"
+        );
     }
     println!("rasterize 总不一致像素 = {total_mismatch}（均为分数斜边压边 tie-break）");
 }
