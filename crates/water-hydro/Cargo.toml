@@ -17,5 +17,9 @@ tracing.workspace = true
 nalgebra.workspace = true
 nalgebra-sparse.workspace = true
 
+# ── eci-gdal：CRS / 投影变换（工作 CRS 解析、局地 UTM 估计） ──
+eci-gdal-core.workspace = true
+eci-gdal-proj.workspace = true
+
 [dev-dependencies]
 serde_json.workspace = true

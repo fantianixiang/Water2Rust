@@ -247,12 +247,21 @@
 
 > **至此在工作 CRS 网格上的全部水面算法（河流 + 湖泊 + 抬升 + 组合）已就位。**
 
+### 阶段 7（进行中）：CRS 解析 + 局地 UTM 估计 ✅（已对拍）
+
+- Rust：[crates/water-hydro/src/crs.rs](../crates/water-hydro/src/crs.rs)
+  `utm_epsg_from_center` / `estimate_local_utm_epsg` / `resolve_working_crs`（经 eci-gdal-proj）
+- 对应 Python：`_resolve_hydro_working_crs` + `estimate_local_utm_crs_from_bounds`
+- 策略：DEM 为投影坐标系→直接用之（`SourceProjected`）；否则由水体范围估计局地 UTM（`LocalUtm`）。
+  UTM 带 `zone=floor((lon+180)/6)+1`，北 `32600+zone` / 南 `32700+zone`；bounds→4326 密化 21 点。
+- 测试 [crs_parity.rs](../crates/water-hydro/tests/crs_parity.rs)：UTM 带选 60 例精确；
+  局地 UTM 估计 3 例（4326 源 + UTM 32649 源经 proj4rs 重投影）与 pyproj **一致**。
+
 ### 后续阶段（GIS 编排层，较重）
 
-- [ ] CRS 解析 + 重投影（工作 CRS UTM ↔ 源 4326，经 eci-gdal-proj）。
+- [ ] CRS 重投影剩余：读水体矢量时几何 源→工作 CRS 重投影、`warp_transform_bounds` ROI、DEM warp 到工作网格。
 - [ ] ROI 裁剪 + 瓦片流水线(`HYDRO_MAX_FULL_RASTER_PIXELS`=2.5e8，tile 8192/pad 50，rayon 并行)。
 - [ ] `generate_hydro_water_dem` 端到端 IO（读 DEM/矢量 → 计算 → 写 GeoTIFF）+ 林芝真实数据整体对拍。
-- [ ] 代码卫生：`river_solve.rs`(327) / `raster_ops.rs`(约 420) 超 300 行，后续拆分。
 - [ ] 阶段 7：CRS 解析 + 重投影（工作 CRS ↔ 源网格）
 - [ ] 阶段 8：ROI/瓦片流水线与并行
 - [ ] 阶段 9：端到端在林芝真实数据上与 Python 整体对拍

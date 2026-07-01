@@ -23,6 +23,7 @@ pub mod lake_flatten;
 pub mod output;
 pub mod postprocess;
 pub mod cross_section;
+pub mod crs;
 pub mod skeleton_graph;
 pub mod skeleton_zloc;
 pub mod river_zsmooth;
