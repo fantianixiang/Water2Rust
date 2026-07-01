@@ -231,12 +231,28 @@
 
 > 至此**河流水面求解的全部数值链已 value-exact**。剩余为 GIS 编排层（窗口/光栅化/缝合/CRS/瓦片/IO）。
 
-### 后续阶段（待实现，逐一对拍）
+### 阶段 6 收尾：河流外层循环 + 内存水面编排 ✅（外层循环已对拍）
 
-- [ ] 逐多边形外层循环：窗口裁剪(`_window_from_geometry_bounds`)、光栅化(all_touched)、缝合到全局面。
-- [ ] 湖泊压平 + 河床抬升 + 输出组合接入编排（模块已就位）。
-- [ ] CRS 解析 + 重投影（eci-gdal-proj）、ROI/瓦片流水线(rayon)、`generate_hydro_water_dem` 端到端 + 林芝真实数据对拍。
-- [ ] 代码卫生：`river_solve.rs`(327) / `raster_ops.rs`(375) 超 300 行，后续拆分。
+- Rust：[crates/water-hydro/src/river_pipeline.rs](../crates/water-hydro/src/river_pipeline.rs)
+  `window_from_geometry_bounds` / `solve_laplace_per_polygon` / `compute_water_surface`
+- 对应 Python：`hydro_laplace.py::solve_laplace_per_polygon` 逐多边形循环 + `generate_hydro_water_dem` 算法段
+- **`solve_laplace_per_polygon`**：逐河流多边形 窗口裁剪(逆仿射) → 光栅化(all_touched) →
+  `solve_river_polygon_surface` → 缝合到全局 f32 面（湖泊跳过）。
+  - 测试 [stage6c_river_pipeline_parity.rs](../crates/water-hydro/tests/stage6c_river_pipeline_parity.rs)：
+    2 河流多边形合成场，surface **最大误差 1.42e-14**（value-exact）。
+    > 注：本机 `rasterio.windows.from_bounds` 原生崩溃（GDAL DLL），Python 端用**同式纯逆仿射**生成夹具；
+    > Rust 侧本就不依赖 rasterio，窗口正确性由光栅化掩膜一致性间接验证。
+- **`compute_water_surface`**：河流求解 → 湖泊压平 → 河床抬升 → 输出组合的内存编排
+  （复用已各自对拍的 `flatten_lake_polygons_on_surface` / `apply_river_dem_floor_lift` / `compose_water_output_array`）。
+
+> **至此在工作 CRS 网格上的全部水面算法（河流 + 湖泊 + 抬升 + 组合）已就位。**
+
+### 后续阶段（GIS 编排层，较重）
+
+- [ ] CRS 解析 + 重投影（工作 CRS UTM ↔ 源 4326，经 eci-gdal-proj）。
+- [ ] ROI 裁剪 + 瓦片流水线(`HYDRO_MAX_FULL_RASTER_PIXELS`=2.5e8，tile 8192/pad 50，rayon 并行)。
+- [ ] `generate_hydro_water_dem` 端到端 IO（读 DEM/矢量 → 计算 → 写 GeoTIFF）+ 林芝真实数据整体对拍。
+- [ ] 代码卫生：`river_solve.rs`(327) / `raster_ops.rs`(约 420) 超 300 行，后续拆分。
 - [ ] 阶段 7：CRS 解析 + 重投影（工作 CRS ↔ 源网格）
 - [ ] 阶段 8：ROI/瓦片流水线与并行
 - [ ] 阶段 9：端到端在林芝真实数据上与 Python 整体对拍
