@@ -47,9 +47,61 @@ pub fn binary_closing(_mask: &Array2<bool>, _iterations: u32) -> Result<Array2<b
     Err(WaterError::NotImplemented("raster_ops::binary_closing"))
 }
 
-/// 高斯平滑（占位）。
-pub fn gaussian_smooth(_data: &Array2<f64>, _sigma: f64) -> Result<Array2<f64>> {
-    Err(WaterError::NotImplemented("raster_ops::gaussian_smooth"))
+/// half-sample 'reflect' 边界索引（对应 scipy 默认 mode='reflect'：d c b a | a b c d | d c b a）。
+fn reflect_index(i: i64, n: i64) -> usize {
+    if n == 1 {
+        return 0;
+    }
+    let n2 = 2 * n;
+    let mut m = i.rem_euclid(n2);
+    if m >= n {
+        m = n2 - 1 - m;
+    }
+    m as usize
+}
+
+/// 高斯平滑（对标 `scipy.ndimage.gaussian_filter`，默认 mode='reflect'、truncate=4.0、order=0）。
+///
+/// 可分离一维高斯核沿两轴依次相关（对称核，相关=卷积）；核为
+/// `exp(-0.5*(x/sigma)^2)` 归一化，半径 `radius = floor(truncate*sigma + 0.5)`。
+pub fn gaussian_smooth(data: &Array2<f64>, sigma: f64) -> Array2<f64> {
+    if sigma <= 0.0 {
+        return data.clone();
+    }
+    let radius = (4.0 * sigma + 0.5) as i64;
+    let inv = -0.5 / (sigma * sigma);
+    let mut kernel: Vec<f64> = (-radius..=radius).map(|x| (inv * (x * x) as f64).exp()).collect();
+    let ksum: f64 = kernel.iter().sum();
+    for v in kernel.iter_mut() {
+        *v /= ksum;
+    }
+
+    let (h, w) = data.dim();
+    // 沿轴 0（行方向/纵向）
+    let mut tmp = Array2::<f64>::zeros((h, w));
+    for c in 0..w {
+        for r in 0..h {
+            let mut acc = 0.0;
+            for (k, &wk) in kernel.iter().enumerate() {
+                let rr = reflect_index(r as i64 + k as i64 - radius, h as i64);
+                acc += wk * data[(rr, c)];
+            }
+            tmp[(r, c)] = acc;
+        }
+    }
+    // 沿轴 1（列方向/横向）
+    let mut out = Array2::<f64>::zeros((h, w));
+    for r in 0..h {
+        for c in 0..w {
+            let mut acc = 0.0;
+            for (k, &wk) in kernel.iter().enumerate() {
+                let cc = reflect_index(c as i64 + k as i64 - radius, w as i64);
+                acc += wk * tmp[(r, cc)];
+            }
+            out[(r, c)] = acc;
+        }
+    }
+    out
 }
 
 /// 欧氏距离变换结果：距离场 + 最近背景像素的行/列索引（对应 scipy 的 return_indices）。

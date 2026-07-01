@@ -148,9 +148,20 @@
 - 测试：[crates/water-hydro/tests/stage6b_medial_parity.rs](../crates/water-hydro/tests/stage6b_medial_parity.rs)
 - **对拍证据**：6 例（文档方块 / 矩形 / 圆盘 / L 形 / 河道 blob / 随机团块）与 skimage **全部 0 不一致**。
 
+### 阶段 6c 原语：gaussian_filter ✅（已对拍）
+
+河流 z_local 管线的空间平滑（mask-aware 2D 高斯）用它。
+
+- Rust：[crates/water-core/src/raster_ops.rs](../crates/water-core/src/raster_ops.rs) `gaussian_smooth`
+- 对应 Python：`scipy.ndimage.gaussian_filter`（默认 mode='reflect'、truncate=4.0、order=0）
+- 实现：可分离一维高斯核（`radius = floor(truncate*σ + 0.5)`，归一化）沿两轴依次相关；边界用 half-sample 'reflect'。
+- 测试：[crates/water-hydro/tests/stage6c_gaussian_parity.rs](../crates/water-hydro/tests/stage6c_gaussian_parity.rs)
+- **对拍证据**：7 例（冲激/随机/斜坡/小数组，σ=0.8~3.0）与 scipy 最大误差 **1.36e-12**（机器精度）。
+
 ### 后续阶段（待实现，逐一对拍）
 
-- [ ] 阶段 6c：河心线横断面 z + isotonic + 河流 Laplace 组装（`solve_laplace_per_polygon`：岸线环 + 河心 pin 作 Dirichlet）
+- [ ] 阶段 6c：河流 z_local 管线剩余——`percentile_filter`、骨架沿流排序 / 切线 / junction 检测、
+      横断面 bank 扫描 z、`_isotonic_multi_peak`，最终 `solve_laplace_per_polygon`（岸线环 + 河心 pin 作 Dirichlet）
 - [ ] 阶段 7：CRS 解析 + 重投影（工作 CRS ↔ 源网格）
 - [ ] 阶段 8：ROI/瓦片流水线与并行
 - [ ] 阶段 9：端到端在林芝真实数据上与 Python 整体对拍
