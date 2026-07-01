@@ -76,6 +76,43 @@ impl Dem {
     pub fn sample_model_bilinear(&self, x: f64, y: f64) -> Option<f32> {
         self.inner.sample_model_bilinear(x, y)
     }
+
+    /// 读取源像素窗口 `[col0, col0+w) × [row0, row0+h)` 的原始高程为 `Array2<f32>`。
+    ///
+    /// 不做重采样：在每个像素的源栅格节点上最近邻取值，命中即为存储原值
+    /// （eci-gdal 读端 node-at-corner + 最近邻=round，整数节点精确落回该像素）。
+    /// 越界或 nodata 像素置 `f32::NAN`。行主序 `(h, w)`。
+    ///
+    /// 返回窗口自身的 rasterio Affine 序变换 `[a,b,c,d,e,f]`（PixelIsArea，
+    /// 窗口左上角对齐源像素 `(col0,row0)` 的左上角）。
+    pub fn read_window_f32(
+        &self,
+        col0: u32,
+        row0: u32,
+        w: u32,
+        h: u32,
+    ) -> (ndarray::Array2<f32>, [f64; 6]) {
+        let b = self.inner.bounds();
+        let width = self.inner.width().max(1) as f64;
+        let height = self.inner.height().max(1) as f64;
+        let a = (b.max_x - b.min_x) / width; // 像素宽
+        let ph = (b.max_y - b.min_y) / height; // 像素高（正）
+        let (origin_x, origin_y) = (b.min_x, b.max_y);
+        let mut out = ndarray::Array2::from_elem((h as usize, w as usize), f32::NAN);
+        for j in 0..h {
+            let row = (row0 + j) as f64;
+            let y = origin_y - row * ph;
+            for i in 0..w {
+                let col = (col0 + i) as f64;
+                let x = origin_x + col * a;
+                if let Some(v) = self.inner.sample_model_nearest(x, y) {
+                    out[(j as usize, i as usize)] = v;
+                }
+            }
+        }
+        let transform = [a, 0.0, origin_x + col0 as f64 * a, 0.0, -ph, origin_y - row0 as f64 * ph];
+        (out, transform)
+    }
 }
 
 /// 将单个多边形栅格化为布尔掩膜。
