@@ -257,9 +257,17 @@
 - 测试 [crs_parity.rs](../crates/water-hydro/tests/crs_parity.rs)：UTM 带选 60 例精确；
   局地 UTM 估计 3 例（4326 源 + UTM 32649 源经 proj4rs 重投影）与 pyproj **一致**。
 
+### 阶段 7（进行中）：几何重投影 ✅（已对拍）
+
+- Rust：[crates/water-hydro/src/crs.rs](../crates/water-hydro/src/crs.rs)
+  `reproject_polygon` / `reproject_multipolygon` / `proj_from_epsg` / `normalize_fclass`
+- 对应 Python：`_read_water_polygons` 的 `to_crs`（逐顶点重投影）+ fclass 规范化。
+- 测试 [reproject_parity.rs](../crates/water-hydro/tests/reproject_parity.rs)：4 例
+  （4326↔UTM49N、UTM→4326、4326→3857，含内环）逐顶点与 pyproj 最大误差 **1.86e-9 米**（纳米级）。
+
 ### 后续阶段（GIS 编排层，较重）
 
-- [ ] CRS 重投影剩余：读水体矢量时几何 源→工作 CRS 重投影、`warp_transform_bounds` ROI、DEM warp 到工作网格。
+- [ ] CRS 重投影剩余：`warp_transform_bounds` ROI、DEM warp 到工作网格（`calculate_default_transform` + 重采样）。
 - [ ] ROI 裁剪 + 瓦片流水线(`HYDRO_MAX_FULL_RASTER_PIXELS`=2.5e8，tile 8192/pad 50，rayon 并行)。
 - [ ] `generate_hydro_water_dem` 端到端 IO（读 DEM/矢量 → 计算 → 写 GeoTIFF）+ 林芝真实数据整体对拍。
 - [ ] 阶段 7：CRS 解析 + 重投影（工作 CRS ↔ 源网格）

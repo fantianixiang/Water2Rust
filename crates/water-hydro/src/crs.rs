@@ -9,6 +9,8 @@
 use anyhow::{bail, Result};
 use eci_gdal_core::RasterCrs;
 use eci_gdal_proj::transform::transform_point;
+use eci_gdal_proj::Proj;
+use geo_types::{Coord, LineString, MultiPolygon, Polygon};
 
 /// 工作 CRS 解析策略。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,4 +109,52 @@ pub fn resolve_working_crs(
     }
     let utm = estimate_local_utm_epsg(water_bounds, water_epsg)?;
     Ok((utm, HydroCrsStrategy::LocalUtm))
+}
+
+/// 由 EPSG 构造 proj4rs Proj（经 eci-gdal-core `RasterCrs::proj()`）。
+pub fn proj_from_epsg(epsg: u16) -> Result<Proj> {
+    RasterCrs::Epsg(epsg).proj()
+}
+
+/// 重投影单个坐标环（逐顶点 `src`→`dst`）。
+fn reproject_ring(ring: &LineString<f64>, src: &Proj, dst: &Proj) -> Result<LineString<f64>> {
+    let mut out: Vec<Coord<f64>> = Vec::with_capacity(ring.0.len());
+    for c in &ring.0 {
+        let (x, y) = transform_point(src, dst, c.x, c.y)?;
+        out.push(Coord { x, y });
+    }
+    Ok(LineString(out))
+}
+
+/// 重投影多边形（外环 + 内环，逐顶点 `src`→`dst`）。对应 geopandas `to_crs` 的几何变换。
+pub fn reproject_polygon(polygon: &Polygon<f64>, src: &Proj, dst: &Proj) -> Result<Polygon<f64>> {
+    let exterior = reproject_ring(polygon.exterior(), src, dst)?;
+    let mut interiors: Vec<LineString<f64>> = Vec::with_capacity(polygon.interiors().len());
+    for ring in polygon.interiors() {
+        interiors.push(reproject_ring(ring, src, dst)?);
+    }
+    Ok(Polygon::new(exterior, interiors))
+}
+
+/// 重投影多重多边形。
+pub fn reproject_multipolygon(
+    mp: &MultiPolygon<f64>,
+    src: &Proj,
+    dst: &Proj,
+) -> Result<MultiPolygon<f64>> {
+    let mut polys: Vec<Polygon<f64>> = Vec::with_capacity(mp.0.len());
+    for p in &mp.0 {
+        polys.push(reproject_polygon(p, src, dst)?);
+    }
+    Ok(MultiPolygon(polys))
+}
+
+/// fclass 文本规范化（对应 Python：strip + lower，剔除空 / "nan" / "none"）。
+pub fn normalize_fclass(raw: Option<&str>) -> Option<String> {
+    let text = raw?.trim().to_lowercase();
+    if text.is_empty() || text == "nan" || text == "none" {
+        None
+    } else {
+        Some(text)
+    }
 }
