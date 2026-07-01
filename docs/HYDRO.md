@@ -203,10 +203,21 @@
   树边 BFS 定序 → 支按到出水口距离稳定排序 → 去重收集，出水口在前。
 - 测试 [stage6c_skeleton_order_parity.rs](../crates/water-hydro/tests/stage6c_skeleton_order_parity.rs)：5 例（出水口左/右、Y 分叉、L 拐、短路径）排序**完全一致**。
 
+### 阶段 6c 原语：横断面水位采样 ✅（已对拍）
+
+- Rust：[crates/water-hydro/src/cross_section.rs](../crates/water-hydro/src/cross_section.rs)
+  `cross_section_z_at_skeleton_pixels`（+ `trace_ray_to_boundary` / `trace_ray_to_contour`）
+- 对应 Python：`hydro_skeleton_zloc.py::_cross_section_z_at_skeleton_pixels`
+- 实现：每站沿切线法向左右投射射线，命中岸线/等高线，取 `min(左岸DEM, 右岸DEM)`；
+  支持 EDT 半宽射线截断（`ceil(hw*1.5)`）、EDT≤1 用骨架 DEM、无命中回退骨架 DEM、contour 模式。
+  保真复刻 `int(round(x))` 的 banker's rounding。
+- 测试 [stage6c_xsec_parity.rs](../crates/water-hydro/tests/stage6c_xsec_parity.rs)：5 例（boundary-only /
+  EDT 截断 / EDT≤1 / 短射线 / contour）z_cross **0 误差**、左右命中**完全一致**。
+
 ### 后续阶段（待实现，逐一对拍）
 
-- [ ] 阶段 6c：河流 z_local 管线剩余——横断面 bank 扫描 z（`_cross_section_z_at_skeleton_pixels`
-      + `_trace_ray_to_boundary`），最终 `solve_laplace_per_polygon`（岸线环 + 河心 pin 作 Dirichlet）
+- [ ] 阶段 6c 收尾：组装 `solve_laplace_per_polygon`（把 rasterize→medial_axis→排序→切线→junction→
+      EDT 半宽→横断面 z→multi_peak→ffill/bfill→P30→mask 高斯→Dirichlet→Laplace 全部原语串起来）。
 - [ ] 阶段 7：CRS 解析 + 重投影（工作 CRS ↔ 源网格）
 - [ ] 阶段 8：ROI/瓦片流水线与并行
 - [ ] 阶段 9：端到端在林芝真实数据上与 Python 整体对拍
