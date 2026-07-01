@@ -92,9 +92,22 @@
 **强制要求 DEM 与已分类(fclass)水体齐全**——DEM/水体文件须存在，且水体矢量须含 `fclass` 字段；
 缺失则明确报错并提示先运行 fclass 流程。已在林芝真实数据验证：`waters.shp`(无 fclass) 被正确拒绝。
 
+### 阶段 5 续：湖泊 DEM 观测（内部/岸线环中位数）端到端 ✅（已对拍）
+
+首个**完整 Python 函数级**端到端复刻——组合窗口计算 + 栅格化(all_touched=False) + 腐蚀取环 + （截尾）中位数：
+
+- Rust：[crates/water-hydro/src/lake.rs](../crates/water-hydro/src/lake.rs)
+  `sample_polygon_interior_dem_median` / `sample_polygon_boundary_ring_dem_median`
+- 对应 Python：`hydro/hydro_lake_flatten.py::_sample_polygon_interior_dem_median` / `_sample_polygon_boundary_ring_dem_median`
+- 复刻要点：多边形 bbox 四角反算局部窗口（各向外扩 1 px、夹到栅格），`local_transform = transform·translation(col_off,row_off)`；
+  内部 = 整掩膜中位数；岸线环 = `掩膜 ∩ ~腐蚀(掩膜)`（过细多边形回退整掩膜）后迭代截尾中位数；有限值过滤（NaN/nodata）。
+- 测试：[crates/water-hydro/tests/stage5b_parity.rs](../crates/water-hydro/tests/stage5b_parity.rs)（5 多边形，含带洞、极扁回退、悬崖高脊）
+- **对拍证据**：内部与岸线环的中位数、像素数**全部 diff = 0（精确一致）**（整数像素对齐，规避栅格化 tie-break）。
+
 ### 后续阶段（待实现，逐一对拍）
 
-- [ ] 阶段 5 续：`rasterize(all_touched=True)` + 组装完整湖泊常数水位(`_sample_polygon_boundary_ring_dem_median`)与 floor-lift 多边形→掩膜
+- [ ] 阶段 5 再续：`rasterize(all_touched=True)`（floor-lift/laplace 掩膜需要）+ 完整 `_compute_lake_constant_z_for_polygon`
+      分层选择 + `_flatten_lake_polygons_on_surface` 把常数水位盖回求解面
 - [ ] 阶段 6：骨架/中轴与河心线 z（`medial_axis` / 横断面 / isotonic）
 - [ ] 阶段 7：CRS 解析 + 重投影（工作 CRS ↔ 源网格）
 - [ ] 阶段 8：ROI/瓦片流水线与并行
