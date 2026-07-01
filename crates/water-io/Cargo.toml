@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 water-core.workspace = true
 anyhow.workspace = true
+ndarray.workspace = true
 geo.workspace = true
 geo-types.workspace = true
 geojson.workspace = true
@@ -19,3 +20,4 @@ eci-gdal-core.workspace = true
 eci-gdal-geotiff.workspace = true
 eci-gdal-proj.workspace = true
 eci-gdal-vector.workspace = true
+eci-gdal-alg.workspace = true

@@ -77,3 +77,34 @@ impl Dem {
         self.inner.sample_model_bilinear(x, y)
     }
 }
+
+/// 将单个多边形栅格化为布尔掩膜（`all_touched = false`，像素中心采样、even-odd 规则）。
+///
+/// 经 `eci-gdal-alg` 的扫描线栅格化（对标 GDAL burn-value 模式）。
+/// `transform` 为 GDAL 6 元仿射 `[a, b, c, d, e, f]`（要求北向上，即 b = d = 0）。
+/// 返回形状 `(height, width)` 的布尔数组，行主序。
+pub fn rasterize_polygon_mask(
+    polygon: &geo_types::Polygon<f64>,
+    transform: &[f64; 6],
+    width: u32,
+    height: u32,
+) -> ndarray::Array2<bool> {
+    let [a, _b, c, _d, e, f] = *transform;
+    let bounds = eci_gdal_core::RasterBounds {
+        min_x: c,
+        min_y: f + height as f64 * e,
+        max_x: c + width as f64 * a,
+        max_y: f,
+    };
+    let mp = geo_types::MultiPolygon(vec![polygon.clone()]);
+    let flat = eci_gdal_alg::rasterize_scope_mask(&mp, bounds, width, height);
+
+    let (w, h) = (width as usize, height as usize);
+    let mut out = ndarray::Array2::<bool>::from_elem((h, w), false);
+    for (i, &v) in flat.iter().enumerate() {
+        if v != 0 {
+            out[(i / w, i % w)] = true;
+        }
+    }
+    out
+}

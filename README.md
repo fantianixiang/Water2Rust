@@ -62,6 +62,8 @@ cargo build --workspace --profile prod
 
 # CLI
 cargo run --release -p water_cli -- hydro --dem dem.tif --water water.shp --output waters.tif
+# 注：hydro 强制要求输入齐全——DEM 与**已分类(含 fclass 字段)**的水体缺一不可；
+#     若水体尚未分类，请先运行 fclass 流程。
 
 # 轻量验证：读水体矢量 + DEM 元数据，采样质心高程并导出 GeoJSON
 cargo run --release -p water_cli -- inspect --water waters.shp --dem dem.tif --output out.geojson

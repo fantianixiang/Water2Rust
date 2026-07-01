@@ -71,10 +71,30 @@
   同时复刻 5 项 metrics 计数。f32 拷贝无算术，逐像素位一致。
 - **对拍证据**：4 例（两模式、含 DEM NaN、含空洞水体），输出数组 + 全部 5 项 metrics **完全一致**。
 
+### 阶段 5（部分）：多边形栅格化 + 形态学腐蚀 ✅（已对拍）
+
+- **binary_erosion**：[crates/water-core/src/raster_ops.rs](../crates/water-core/src/raster_ops.rs) `binary_erosion`
+  - 对应 scipy 默认 `binary_erosion(mask, iterations=n)`：4 邻域十字结构、`border_value=0`。
+  - 对拍：6 例（实心矩形/随机块/圆盘/细条，1~3 次迭代）与 scipy **逐像素 0 不一致**。
+- **多边形栅格化(all_touched=False)**：[crates/water-io/src/raster.rs](../crates/water-io/src/raster.rs) `rasterize_polygon_mask`
+  - 经 `eci-gdal-alg::rasterize_scope_mask`（扫描线 even-odd、像素中心采样，对标 GDAL burn-value）。
+  - 对拍 rasterio(all_touched=False) 5 例：rect/triangle/pentagon/rect_with_hole **精确一致**；
+    `slanted`（分数顶点斜边）1/504 像素差异。
+  - **容差**：整数/轴对齐多边形精确一致；分数斜边因像素中心恰压边的浮点 tie-break，
+    每多边形容许 ≤1 个边界像素、占比 < 0.5%。rasterio 在世界坐标做扫描线、eci-gdal 在像素坐标做，
+    代数等价但 ~1e-13 舍入在压边处会翻转一个边界像素；对水面掩膜物理影响可忽略（连不同 GDAL 版本亦有此差异）。
+  - 测试：[crates/water-hydro/tests/stage5_parity.rs](../crates/water-hydro/tests/stage5_parity.rs)
+  - 待补：`all_touched=True`（eci-gdal 未提供，floor-lift/laplace 掩膜需要）；完整湖泊常数水位/floor-lift 的多边形→掩膜组装。
+
+### 输入检查（按需求新增）
+
+`generate_hydro_water_dem` 入口 `validate_hydro_inputs`（[lib.rs](../crates/water-hydro/src/lib.rs)）：
+**强制要求 DEM 与已分类(fclass)水体齐全**——DEM/水体文件须存在，且水体矢量须含 `fclass` 字段；
+缺失则明确报错并提示先运行 fclass 流程。已在林芝真实数据验证：`waters.shp`(无 fclass) 被正确拒绝。
+
 ### 后续阶段（待实现，逐一对拍）
 
-- [ ] 阶段 5：多边形栅格化（`rasterio.features.rasterize`，all_touched）+ 形态学（`binary_erosion` 岸线环）
-      → 打通完整湖泊常数水位与 floor-lift 的多边形→掩膜环节
+- [ ] 阶段 5 续：`rasterize(all_touched=True)` + 组装完整湖泊常数水位(`_sample_polygon_boundary_ring_dem_median`)与 floor-lift 多边形→掩膜
 - [ ] 阶段 6：骨架/中轴与河心线 z（`medial_axis` / 横断面 / isotonic）
 - [ ] 阶段 7：CRS 解析 + 重投影（工作 CRS ↔ 源网格）
 - [ ] 阶段 8：ROI/瓦片流水线与并行

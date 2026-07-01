@@ -43,8 +43,47 @@ pub struct HydroJob {
     pub debug: bool,
 }
 
+/// 校验 hydro 输入齐全性：**强制要求 DEM 与已分类(fclass)水体同时具备**。
+///
+/// hydro 需要的是**已完成 fclass 分类**的水体（河流/湖泊等语义决定不同物理处理），
+/// 因此拒绝缺少 `fclass` 字段的原始水体输入——应先运行 fclass 流程。
+pub fn validate_hydro_inputs(dem: &Path, water: &Path) -> Result<()> {
+    if !dem.exists() {
+        return Err(WaterError::InvalidInput(format!(
+            "DEM 输入不存在: {}",
+            dem.display()
+        )));
+    }
+    if !water.exists() {
+        return Err(WaterError::InvalidInput(format!(
+            "水体输入不存在: {}",
+            water.display()
+        )));
+    }
+    let fc = water_io::vector::read_vector(water)?;
+    if fc.features.is_empty() {
+        return Err(WaterError::InvalidInput(format!(
+            "水体输入无任何要素: {}",
+            water.display()
+        )));
+    }
+    let has_fclass = fc
+        .features
+        .iter()
+        .any(|f| f.properties.keys().any(|k| k.eq_ignore_ascii_case("fclass")));
+    if !has_fclass {
+        return Err(WaterError::InvalidInput(format!(
+            "水体输入缺少 fclass 字段: {}。hydro 要求已分类的水体，请先运行 fclass 流程为水体赋予 fclass。",
+            water.display()
+        )));
+    }
+    Ok(())
+}
+
 /// 生成水面 DEM（占位）。对应 `generate_hydro_water_dem`。
-pub fn generate_hydro_water_dem(_job: &HydroJob) -> Result<()> {
+pub fn generate_hydro_water_dem(job: &HydroJob) -> Result<()> {
+    // 输入齐全性检查：强制 DEM + 已分类(fclass)水体
+    validate_hydro_inputs(&job.dem_path, &job.water_path)?;
     Err(WaterError::NotImplemented("water_hydro::generate_hydro_water_dem"))
 }
 
