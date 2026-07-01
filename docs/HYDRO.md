@@ -214,10 +214,29 @@
 - 测试 [stage6c_xsec_parity.rs](../crates/water-hydro/tests/stage6c_xsec_parity.rs)：5 例（boundary-only /
   EDT 截断 / EDT≤1 / 短射线 / contour）z_cross **0 误差**、左右命中**完全一致**。
 
+### 阶段 6c 收尾：河流水面数值核 ✅（已对拍）
+
+**逐河流多边形水面求解的完整装配**——把 12 个原语串成一条链：
+
+- Rust：[crates/water-hydro/src/river_solve.rs](../crates/water-hydro/src/river_solve.rs) `solve_river_polygon_surface`
+- 对应 Python：`hydro_laplace.py::solve_laplace_per_polygon` 的**单多边形内层块**
+- 链路：`medial_axis`(注入种子) → `distance_transform_edt` 半宽 → `order_skeleton_pixels_along_flow`
+  → `compute_skeleton_tangents` → `detect_junction_stations` → 最近骨架 EDT → `cross_section_z`
+  → `isotonic_multi_peak` → ffill/bfill → 空间 P30(`percentile_filter`) → mask-aware 高斯 → Dirichlet(河心 pin, 排除 junction) → `solve_laplace_dirichlet`；短骨架(<5)走最近骨架 DEM+水深回退。
+- **保真关键**：mask 场用 float32（复刻 scipy 对 float32 输入的高斯**轴间 f32 舍入**，
+  新增 [gaussian_smooth_f32](../crates/water-core/src/raster_ops.rs)）；`int(round)` banker's rounding；
+  medial_axis 固定种子 tiebreaker。
+- 测试 [stage6c_river_solve_parity.rs](../crates/water-hydro/tests/stage6c_river_solve_parity.rs)：3 例
+  （直河道/L 形/短 blob 回退）z_local **最大误差 6.5e-13**（机器精度，含 Laplace 稀疏直接解）。
+
+> 至此**河流水面求解的全部数值链已 value-exact**。剩余为 GIS 编排层（窗口/光栅化/缝合/CRS/瓦片/IO）。
+
 ### 后续阶段（待实现，逐一对拍）
 
-- [ ] 阶段 6c 收尾：组装 `solve_laplace_per_polygon`（把 rasterize→medial_axis→排序→切线→junction→
-      EDT 半宽→横断面 z→multi_peak→ffill/bfill→P30→mask 高斯→Dirichlet→Laplace 全部原语串起来）。
+- [ ] 逐多边形外层循环：窗口裁剪(`_window_from_geometry_bounds`)、光栅化(all_touched)、缝合到全局面。
+- [ ] 湖泊压平 + 河床抬升 + 输出组合接入编排（模块已就位）。
+- [ ] CRS 解析 + 重投影（eci-gdal-proj）、ROI/瓦片流水线(rayon)、`generate_hydro_water_dem` 端到端 + 林芝真实数据对拍。
+- [ ] 代码卫生：`river_solve.rs`(327) / `raster_ops.rs`(375) 超 300 行，后续拆分。
 - [ ] 阶段 7：CRS 解析 + 重投影（工作 CRS ↔ 源网格）
 - [ ] 阶段 8：ROI/瓦片流水线与并行
 - [ ] 阶段 9：端到端在林芝真实数据上与 Python 整体对拍

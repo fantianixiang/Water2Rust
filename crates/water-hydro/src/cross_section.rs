@@ -11,7 +11,7 @@ use ndarray::Array2;
 use crate::skeleton_zloc::Pixel;
 
 /// Python `int(round(x))`：四舍六入五取偶（round-half-to-even）。
-fn py_round(x: f64) -> i64 {
+pub(crate) fn py_round(x: f64) -> i64 {
     let f = x.floor();
     let diff = x - f;
     if diff < 0.5 {

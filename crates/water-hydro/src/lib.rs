@@ -25,6 +25,7 @@ pub mod postprocess;
 pub mod cross_section;
 pub mod skeleton_graph;
 pub mod skeleton_zloc;
+pub mod river_solve;
 
 /// 水面 DEM 输出组合模式。对应 `WATER_OUTPUT_MODES`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

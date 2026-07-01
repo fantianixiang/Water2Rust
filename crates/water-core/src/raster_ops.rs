@@ -104,6 +104,49 @@ pub fn gaussian_smooth(data: &Array2<f64>, sigma: f64) -> Array2<f64> {
     out
 }
 
+/// 对 float32 掩膜场做高斯（对标 `scipy.ndimage.gaussian_filter` 处理 float32 输入的路径：
+/// 两轴分离，**轴间中间结果按 f32 舍入**、输出按 f32 舍入）。返回 f64（f32 结果的提升），
+/// 供 mask-aware 归一化 `zg/mg` 使用，以逐位复刻 Python 用 float32 掩膜时的舍入。
+pub fn gaussian_smooth_f32(data: &Array2<f32>, sigma: f64) -> Array2<f64> {
+    let (h, w) = data.dim();
+    if sigma <= 0.0 {
+        return data.mapv(|v| v as f64);
+    }
+    let radius = (4.0 * sigma + 0.5) as i64;
+    let inv = -0.5 / (sigma * sigma);
+    let mut kernel: Vec<f64> = (-radius..=radius).map(|x| (inv * (x * x) as f64).exp()).collect();
+    let ksum: f64 = kernel.iter().sum();
+    for v in kernel.iter_mut() {
+        *v /= ksum;
+    }
+
+    // 轴 0（行）：累加 f64，中间结果按 f32 舍入。
+    let mut tmp = Array2::<f32>::zeros((h, w));
+    for c in 0..w {
+        for r in 0..h {
+            let mut acc = 0.0f64;
+            for (k, &wk) in kernel.iter().enumerate() {
+                let rr = reflect_index(r as i64 + k as i64 - radius, h as i64);
+                acc += wk * data[(rr, c)] as f64;
+            }
+            tmp[(r, c)] = acc as f32;
+        }
+    }
+    // 轴 1（列）：读 f32 中间结果，累加 f64，输出按 f32 舍入后提升为 f64。
+    let mut out = Array2::<f64>::zeros((h, w));
+    for r in 0..h {
+        for c in 0..w {
+            let mut acc = 0.0f64;
+            for (k, &wk) in kernel.iter().enumerate() {
+                let cc = reflect_index(c as i64 + k as i64 - radius, w as i64);
+                acc += wk * tmp[(r, cc)] as f64;
+            }
+            out[(r, c)] = acc as f32 as f64;
+        }
+    }
+    out
+}
+
 /// 欧氏距离变换结果：距离场 + 最近背景像素的行/列索引（对应 scipy 的 return_indices）。
 #[derive(Debug, Clone)]
 pub struct EdtResult {
