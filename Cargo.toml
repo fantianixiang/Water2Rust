@@ -62,6 +62,8 @@ serde_json = { version = "1.0", features = ["preserve_order"] }
 clap = { version = "4.5.48", features = ["derive"] }
 rayon = "1.10"
 ndarray = "0.16"
+nalgebra = "0.33"
+nalgebra-sparse = "0.10"
 geo = "0.28"
 geo-types = "0.7.18"
 rstar = "0.12"
