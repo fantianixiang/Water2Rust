@@ -135,9 +135,21 @@
 - **对拍证据**：距离场与 scipy **精确一致**（最大误差 1.78e-15，sqrt 机器精度）；最近特征索引校验为
   「所选特征确为背景像素且欧氏距离等于 scipy 距离」（并列平手时允许选不同的等距特征）。
 
+### 阶段 6b：中轴骨架 medial_axis ✅（已对拍，固定随机种子）
+
+- Rust：[crates/water-core/src/raster_ops.rs](../crates/water-core/src/raster_ops.rs) `medial_axis`
+- 对应 Python：`skimage.morphology.medial_axis`（0.25.2）
+- 算法：512 项查表（`keep = 中心前景 且 (去掉中心改变 8 连通分量数 或 邻域前景<3)`）+ 距离变换（阶段 6a EDT）
+  + cornerness（`9 - 邻域前景数`）+ 按 `(distance, corner_score, tiebreaker)` 升序单遍细化（`table[邻域index]==0` 则删）。
+- **随机种子处理（关键）**：skimage 用 PCG64 随机 permutation 作并列 tiebreaker，**默认非确定性**。
+  为可对拍，Rust `medial_axis` 接受**外部注入的 tiebreaker**；对拍时由 Python 用**固定种子** `rng=SEED`
+  运行，并复现其内部同种子 permutation（`default_rng(SEED).permutation(arange(n))`）一并 dump，Rust 注入同一序列
+  → 双方在**同一随机种子**下逐像素一致。
+- 测试：[crates/water-hydro/tests/stage6b_medial_parity.rs](../crates/water-hydro/tests/stage6b_medial_parity.rs)
+- **对拍证据**：6 例（文档方块 / 矩形 / 圆盘 / L 形 / 河道 blob / 随机团块）与 skimage **全部 0 不一致**。
+
 ### 后续阶段（待实现，逐一对拍）
 
-- [ ] 阶段 6b：中轴骨架 `medial_axis`（替代 skimage.morphology.medial_axis）
 - [ ] 阶段 6c：河心线横断面 z + isotonic + 河流 Laplace 组装（`solve_laplace_per_polygon`：岸线环 + 河心 pin 作 Dirichlet）
 - [ ] 阶段 7：CRS 解析 + 重投影（工作 CRS ↔ 源网格）
 - [ ] 阶段 8：ROI/瓦片流水线与并行
