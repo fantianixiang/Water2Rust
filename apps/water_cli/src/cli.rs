@@ -19,6 +19,8 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// 轻量检查：读取水体矢量(+可选 DEM)，报告信息并可导出 GeoJSON。
+    Inspect(InspectArgs),
     /// 生成水面 DEM。
     Hydro(HydroArgs),
     /// 水体 fclass 语义分类。
@@ -34,6 +36,19 @@ pub enum OutputMode {
     WaterSurfaceOnly,
     /// 非水像素与未求解空洞用 DEM 回填。
     WaterSurfaceWithDem,
+}
+
+#[derive(Debug, Parser)]
+pub struct InspectArgs {
+    /// 水体多边形（shapefile / GeoJSON / GeoPackage）。
+    #[arg(long)]
+    pub water: PathBuf,
+    /// 可选 DEM，用于报告栅格信息并采样各要素质心高程。
+    #[arg(long)]
+    pub dem: Option<PathBuf>,
+    /// 可选输出 GeoJSON 路径（含采样得到的 `elev` 字段）。
+    #[arg(long)]
+    pub output: Option<PathBuf>,
 }
 
 #[derive(Debug, Parser)]

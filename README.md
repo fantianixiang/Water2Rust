@@ -10,6 +10,7 @@
 
 | 子命令 | 能力 | 对应原 Python |
 | --- | --- | --- |
+| `inspect` | 轻量检查：读水体矢量(+可选 DEM)，报告信息、采样质心高程、导出 GeoJSON | —（验证用） |
 | `hydro` | 生成水面 DEM | `generate_hydro_water_dem` |
 | `fclass` | 水体 fclass 语义分类 | `assign_water_fclass` |
 | `edge-depth` | 水边深度导出 | `export_water_edge_depth` |
@@ -62,6 +63,9 @@ cargo build --workspace --profile prod
 # CLI
 cargo run --release -p water_cli -- hydro --dem dem.tif --water water.shp --output waters.tif
 
+# 轻量验证：读水体矢量 + DEM 元数据，采样质心高程并导出 GeoJSON
+cargo run --release -p water_cli -- inspect --water waters.shp --dem dem.tif --output out.geojson
+
 # API（http://127.0.0.1:8000，OpenAPI 端点见 routes）
 cargo run --release -p water_api
 ```
@@ -82,6 +86,7 @@ cargo run --release -p water_api
 
 - [x] 工程骨架 + AGENTS.md / CLAUDE.md + CLI/API 框架
 - [x] 接入 eci-gdal（git submodule，作为 workspace 成员）
-- [ ] 落地 `water-io` 真实栅格/矢量 IO（调用 eci-gdal-geotiff/vector/proj）
+- [x] `water-io` 真实 IO：DEM 惰性元数据/采样（eci-gdal-geotiff）+ 矢量含属性读取（eci-gdal-vector）+ GeoJSON 导出
+- [x] 轻量 `inspect` 流程，已用林芝真实数据验证（读 41 个水体多边形 + 1.9GB DEM采样，高程 826–4580m）
 - [ ] `water-core::raster_ops` 数值算法（与 scipy/skimage 对拍）
-- [ ] `water-fclass` / `water-hydro` / `water-edge-depth` 业务逻辑
+- [ ] `water-hydro`（水面 DEM，最大）/ `water-fclass` / `water-edge-depth` 业务逻辑
