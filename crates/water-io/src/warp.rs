@@ -10,6 +10,39 @@
 use anyhow::{bail, Result};
 use eci_gdal_core::RasterCrs;
 use eci_gdal_proj::transform::transform_point;
+use ndarray::Array2;
+
+/// 应用仿射（rasterio Affine 序 `[a,b,c,d,e,f]`）：像素 (col,row) → 地理 (x,y)。
+///
+/// `x = a·col + b·row + c`；`y = d·col + e·row + f`。
+#[inline]
+fn apply_affine(t: &[f64; 6], col: f64, row: f64) -> (f64, f64) {
+    (t[0] * col + t[1] * row + t[2], t[3] * col + t[4] * row + t[5])
+}
+
+/// 逆仿射（rasterio Affine 序）：地理 (x,y) → 像素 (col,row)。返回同为 `[a,b,c,d,e,f]` 序。
+fn invert_affine(t: &[f64; 6]) -> Option<[f64; 6]> {
+    let det = t[0] * t[4] - t[1] * t[3];
+    if det.abs() < 1e-300 {
+        return None;
+    }
+    Some([
+        t[4] / det,
+        -t[1] / det,
+        (t[1] * t[5] - t[4] * t[2]) / det,
+        -t[3] / det,
+        t[0] / det,
+        (t[3] * t[2] - t[0] * t[5]) / det,
+    ])
+}
+
+/// 重采样方式（对应 rasterio `Resampling`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Resampling {
+    Nearest,
+    Bilinear,
+}
+
 
 /// 建议 warp 输出网格：目标 GeoTransform + 宽高（对应 `calculate_default_transform`）。
 #[derive(Debug, Clone, PartialEq)]
@@ -126,4 +159,110 @@ pub fn suggested_warp_output(
         width,
         height,
     })
+}
+
+/// 栅格重投影重采样（对应 rasterio `reproject`）。
+///
+/// 逐目标像素：目标像素中心 → 目标地理 → 反投影到源 CRS → 源像素坐标 → 采样。
+/// 源无效值（`src_nodata`）与越界均记为 NaN；bilinear 对有效邻居加权平均后归一化。
+///
+/// 参数均严格采用 rasterio Affine 序 `[a,b,c,d,e,f]`（见 `apply_affine`）。
+#[allow(clippy::too_many_arguments)]
+pub fn reproject(
+    src: &Array2<f32>,
+    src_transform: [f64; 6],
+    src_epsg: u16,
+    src_nodata: Option<f64>,
+    dst_transform: [f64; 6],
+    dst_w: usize,
+    dst_h: usize,
+    dst_epsg: u16,
+    resampling: Resampling,
+) -> Result<Array2<f32>> {
+    let (sh, sw) = src.dim();
+    let src_proj = RasterCrs::Epsg(src_epsg).proj()?;
+    let dst_proj = RasterCrs::Epsg(dst_epsg).proj()?;
+    let src_inv = invert_affine(&src_transform).ok_or_else(|| anyhow::anyhow!("源仿射不可逆"))?;
+    let nodata = src_nodata.map(|v| v as f32);
+
+    // 判断源像素有效（在界内且非 nodata），返回 Some(值) 或 None。
+    let sample_at = |ic: i64, ir: i64| -> Option<f32> {
+        if ir < 0 || ir >= sh as i64 || ic < 0 || ic >= sw as i64 {
+            return None;
+        }
+        let v = src[(ir as usize, ic as usize)];
+        if !v.is_finite() {
+            return None;
+        }
+        if let Some(nd) = nodata {
+            if v == nd {
+                return None;
+            }
+        }
+        Some(v)
+    };
+
+    let mut dst = Array2::<f32>::from_elem((dst_h, dst_w), f32::NAN);
+    for i in 0..dst_h {
+        for j in 0..dst_w {
+            // 目标像素中心 → 目标地理。
+            let (dx, dy) = apply_affine(&dst_transform, j as f64 + 0.5, i as f64 + 0.5);
+            // 反投影到源 CRS。
+            let (sx, sy) = match transform_point(&dst_proj, &src_proj, dx, dy) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            // 源地理 → 源像素（角约定：整数=像素边界）。
+            let (scol, srow) = apply_affine(&src_inv, sx, sy);
+            // GDAL 门控：源点须落在源栅格 [0,W)×[0,H) 内，否则记为 NaN。
+            if scol < 0.0 || scol >= sw as f64 || srow < 0.0 || srow >= sh as f64 {
+                continue;
+            }
+
+            match resampling {
+                Resampling::Nearest => {
+                    let ic = scol.floor() as i64;
+                    let ir = srow.floor() as i64;
+                    if let Some(v) = sample_at(ic, ir) {
+                        dst[(i, j)] = v;
+                    }
+                }
+                Resampling::Bilinear => {
+                    // GDAL 规则：中心所在（containing）源像素为 nodata/越界 → NaN。
+                    if sample_at(scol.floor() as i64, srow.floor() as i64).is_none() {
+                        continue;
+                    }
+                    // 转中心约定（整数=像素中心），取左上邻居 + 比例，对有效邻居加权平均。
+                    let cx = scol - 0.5;
+                    let cy = srow - 0.5;
+                    let i0 = cx.floor();
+                    let j0 = cy.floor();
+                    let rx = cx - i0;
+                    let ry = cy - j0;
+                    let (ci, cj) = (i0 as i64, j0 as i64);
+                    let neigh = [
+                        (cj, ci, (1.0 - rx) * (1.0 - ry)),
+                        (cj, ci + 1, rx * (1.0 - ry)),
+                        (cj + 1, ci, (1.0 - rx) * ry),
+                        (cj + 1, ci + 1, rx * ry),
+                    ];
+                    let mut acc = 0.0f64;
+                    let mut wsum = 0.0f64;
+                    for &(nr, nc, w) in &neigh {
+                        if w == 0.0 {
+                            continue;
+                        }
+                        if let Some(v) = sample_at(nc, nr) {
+                            acc += w * v as f64;
+                            wsum += w;
+                        }
+                    }
+                    if wsum > 0.0 {
+                        dst[(i, j)] = (acc / wsum) as f32;
+                    }
+                }
+            }
+        }
+    }
+    Ok(dst)
 }
