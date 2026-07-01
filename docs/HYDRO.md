@@ -124,9 +124,21 @@
 - **对拍证据**：与真实 Python `_flatten_lake_polygons_on_surface` 对拍——压平后 surface 逐像素一致、
   summary 计数（lake/filled/skipped/filled_pixel）全等、逐多边形常数水位全等（如 component 场景碎片共享 1046.5）。
 
+### 阶段 6a：精确欧氏距离变换 EDT ✅（已对拍）
+
+河流路径的基础原语（河道半宽、最近骨架像素均依赖它）。
+
+- Rust：[crates/water-core/src/raster_ops.rs](../crates/water-core/src/raster_ops.rs) `distance_transform_edt`
+- 对应 Python：`scipy.ndimage.distance_transform_edt`（含 `return_indices`）
+- 实现：Felzenszwalb–Huttenlocher 两遍（列 + 行）**精确**平方距离变换（下包络法），并跟踪最近背景像素的行/列索引。
+- 测试：[crates/water-hydro/tests/stage6_edt_parity.rs](../crates/water-hydro/tests/stage6_edt_parity.rs)（rect/disk/ring/random/thin_line/single_bg）
+- **对拍证据**：距离场与 scipy **精确一致**（最大误差 1.78e-15，sqrt 机器精度）；最近特征索引校验为
+  「所选特征确为背景像素且欧氏距离等于 scipy 距离」（并列平手时允许选不同的等距特征）。
+
 ### 后续阶段（待实现，逐一对拍）
 
-- [ ] 阶段 6：河流路径——骨架/中轴与河心线 z（`medial_axis` / 横断面 / isotonic），作为 Laplace 的 Dirichlet 河心 pin 来源
+- [ ] 阶段 6b：中轴骨架 `medial_axis`（替代 skimage.morphology.medial_axis）
+- [ ] 阶段 6c：河心线横断面 z + isotonic + 河流 Laplace 组装（`solve_laplace_per_polygon`：岸线环 + 河心 pin 作 Dirichlet）
 - [ ] 阶段 7：CRS 解析 + 重投影（工作 CRS ↔ 源网格）
 - [ ] 阶段 8：ROI/瓦片流水线与并行
 - [ ] 阶段 9：端到端在林芝真实数据上与 Python 整体对拍
