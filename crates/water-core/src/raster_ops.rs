@@ -47,6 +47,34 @@ pub fn binary_closing(_mask: &Array2<bool>, _iterations: u32) -> Result<Array2<b
     Err(WaterError::NotImplemented("raster_ops::binary_closing"))
 }
 
+/// 二值形态学膨胀（scipy.ndimage.binary_dilation 默认语义）。
+///
+/// 结构元为 4 邻域十字（`generate_binary_structure(2, 1)`），`border_value = 0`
+/// （越界视为 0，不贡献膨胀）。忠实复刻 `binary_dilation(mask, iterations=n)`。
+pub fn binary_dilation(mask: &Array2<bool>, iterations: usize) -> Array2<bool> {
+    let (h, w) = mask.dim();
+    let mut cur = mask.clone();
+    for _ in 0..iterations {
+        let mut out = cur.clone();
+        for r in 0..h {
+            for c in 0..w {
+                if cur[(r, c)] {
+                    continue;
+                }
+                let up = r > 0 && cur[(r - 1, c)];
+                let down = r + 1 < h && cur[(r + 1, c)];
+                let left = c > 0 && cur[(r, c - 1)];
+                let right = c + 1 < w && cur[(r, c + 1)];
+                if up || down || left || right {
+                    out[(r, c)] = true;
+                }
+            }
+        }
+        cur = out;
+    }
+    cur
+}
+
 /// half-sample 'reflect' 边界索引（对�?scipy 默认 mode='reflect'：d c b a | a b c d | d c b a）�?
 pub(crate) fn reflect_index(i: i64, n: i64) -> usize {
     if n == 1 {

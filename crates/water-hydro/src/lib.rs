@@ -29,6 +29,7 @@ pub mod skeleton_zloc;
 pub mod river_zsmooth;
 pub mod river_solve;
 pub mod river_pipeline;
+pub mod skirt;
 
 /// 水面 DEM 输出组合模式。对应 `WATER_OUTPUT_MODES`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
