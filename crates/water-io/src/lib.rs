@@ -9,3 +9,4 @@
 pub mod raster;
 pub mod vector;
 pub mod warp;
+pub mod geotiff_write;
