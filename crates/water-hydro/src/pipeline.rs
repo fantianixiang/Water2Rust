@@ -14,7 +14,7 @@ use ndarray::Array2;
 
 use water_io::raster::Dem;
 use water_io::vector::read_vector;
-use water_io::warp::{reproject, suggested_warp_output, Resampling};
+use water_io::warp::{reproject_with_max_error, suggested_warp_output, Resampling};
 use water_io::geotiff_write::write_geotiff_f32;
 use water_core::error::WaterError;
 use water_core::Result;
@@ -25,6 +25,9 @@ use crate::HydroJob;
 
 /// 输出阶段裙边带宽（Python `HYDRO_WATER_SKIRT_PIXELS`，模块常量）。
 const HYDRO_WATER_SKIRT_PIXELS: usize = 5;
+/// GDAL warp 默认近似变换误差阈值（像素）。复刻 GDAL `errorThreshold=0.125`，
+/// 使 DEM 重投影与原 Python(GDAL) 参照 bit 级一致（见 docs/HYDRO.md）。
+const GDAL_WARP_MAX_ERROR: f64 = 0.125;
 /// 内存整幅栅格像素上限（Python `HYDRO_MAX_FULL_RASTER_PIXELS`）。
 const HYDRO_MAX_FULL_RASTER_PIXELS: u64 = 250_000_000;
 /// 输出 nodata。
@@ -167,7 +170,7 @@ pub fn run_hydro_pipeline(job: &HydroJob) -> Result<()> {
             "ROI 超出内存预算（工作网格 {work_pixels} px），瓦片路径尚未实现",
         )));
     }
-    let dem_work_f32 = reproject(
+    let dem_work_f32 = reproject_with_max_error(
         &dem_src,
         src_win_t,
         src_epsg,
@@ -177,6 +180,7 @@ pub fn run_hydro_pipeline(job: &HydroJob) -> Result<()> {
         warp.height,
         target_epsg,
         Resampling::Bilinear,
+        GDAL_WARP_MAX_ERROR,
     )?;
     let dem_work = dem_work_f32.mapv(|v| v as f64);
 
@@ -193,7 +197,7 @@ pub fn run_hydro_pipeline(job: &HydroJob) -> Result<()> {
     );
 
     // 9) 重投影回源 ROI 网格（双线性；工作网格 NaN 视为无效）。
-    let out_src = reproject(
+    let out_src = reproject_with_max_error(
         &out_work,
         warp.transform,
         target_epsg,
@@ -203,6 +207,7 @@ pub fn run_hydro_pipeline(job: &HydroJob) -> Result<()> {
         hh as usize,
         src_epsg,
         Resampling::Bilinear,
+        GDAL_WARP_MAX_ERROR,
     )?;
 
     // 10) NaN → nodata，写 ROI 范围 GeoTIFF（源 CRS）。

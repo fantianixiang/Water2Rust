@@ -166,7 +166,7 @@ pub fn suggested_warp_output(
 /// 逐目标像素：目标像素中心 → 目标地理 → 反投影到源 CRS → 源像素坐标 → 采样。
 /// 源无效值（`src_nodata`）与越界均记为 NaN；bilinear 对有效邻居加权平均后归一化。
 ///
-/// 参数均严格采用 rasterio Affine 序 `[a,b,c,d,e,f]`（见 `apply_affine`）。
+/// 采用**精确逐像素** PROJ 变换（`max_error = 0`）。参数均严格采用 rasterio Affine 序。
 #[allow(clippy::too_many_arguments)]
 pub fn reproject(
     src: &Array2<f32>,
@@ -178,6 +178,33 @@ pub fn reproject(
     dst_h: usize,
     dst_epsg: u16,
     resampling: Resampling,
+) -> Result<Array2<f32>> {
+    reproject_with_max_error(
+        src, src_transform, src_epsg, src_nodata, dst_transform, dst_w, dst_h, dst_epsg,
+        resampling, 0.0,
+    )
+}
+
+/// 栅格重投影重采样，可指定近似变换误差阈值 `max_error`（像素，曼哈顿）。
+///
+/// - `max_error = 0`：逐像素精确 PROJ 变换（数学精确）。
+/// - `max_error > 0`（GDAL 默认 0.125）：逐目标行走 `GDALApproxTransform` 近似变换器
+///   （`warp_approx`），与 GDAL/rasterio warp 默认行为 **bit 级一致**且更快。
+///
+/// 采样阶段（nearest / bilinear）与源无效值门控不受 `max_error` 影响，只改变
+/// 目标像素→源像素坐标的求解方式。
+#[allow(clippy::too_many_arguments)]
+pub fn reproject_with_max_error(
+    src: &Array2<f32>,
+    src_transform: [f64; 6],
+    src_epsg: u16,
+    src_nodata: Option<f64>,
+    dst_transform: [f64; 6],
+    dst_w: usize,
+    dst_h: usize,
+    dst_epsg: u16,
+    resampling: Resampling,
+    max_error: f64,
 ) -> Result<Array2<f32>> {
     let (sh, sw) = src.dim();
     let src_proj = RasterCrs::Epsg(src_epsg).proj()?;
@@ -202,18 +229,28 @@ pub fn reproject(
         Some(v)
     };
 
+    // 精确基变换：目标像素 `(col, row)` → 源像素 `(scol, srow)`。
+    let base = |px: f64, py: f64| -> Option<(f64, f64)> {
+        let (dx, dy) = apply_affine(&dst_transform, px, py);
+        let (sx, sy) = transform_point(&dst_proj, &src_proj, dx, dy).ok()?;
+        Some(apply_affine(&src_inv, sx, sy))
+    };
+
     let mut dst = Array2::<f32>::from_elem((dst_h, dst_w), f32::NAN);
     for i in 0..dst_h {
+        // 逐目标行求源像素坐标（近似或精确，取决于 max_error）。
+        let approx = crate::warp_approx::RowApprox {
+            py: i as f64 + 0.5,
+            max_error,
+            base: &base,
+        };
+        let (sxs, sys, oks) = approx.transform_row(dst_w);
+
         for j in 0..dst_w {
-            // 目标像素中心 → 目标地理。
-            let (dx, dy) = apply_affine(&dst_transform, j as f64 + 0.5, i as f64 + 0.5);
-            // 反投影到源 CRS。
-            let (sx, sy) = match transform_point(&dst_proj, &src_proj, dx, dy) {
-                Ok(p) => p,
-                Err(_) => continue,
-            };
-            // 源地理 → 源像素（角约定：整数=像素边界）。
-            let (scol, srow) = apply_affine(&src_inv, sx, sy);
+            if !oks[j] {
+                continue;
+            }
+            let (scol, srow) = (sxs[j], sys[j]);
             // GDAL 门控：源点须落在源栅格 [0,W)×[0,H) 内，否则记为 NaN。
             if scol < 0.0 || scol >= sw as f64 || srow < 0.0 || srow >= sh as f64 {
                 continue;
