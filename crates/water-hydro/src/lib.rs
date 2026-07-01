@@ -30,6 +30,7 @@ pub mod river_zsmooth;
 pub mod river_solve;
 pub mod river_pipeline;
 pub mod skirt;
+pub mod pipeline;
 
 /// 水面 DEM 输出组合模式。对应 `WATER_OUTPUT_MODES`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,11 +90,11 @@ pub fn validate_hydro_inputs(dem: &Path, water: &Path) -> Result<()> {
     Ok(())
 }
 
-/// 生成水面 DEM（占位）。对应 `generate_hydro_water_dem`。
+/// 生成水面 DEM。对应 `generate_hydro_water_dem`（非瓦片 / 无网络主路径）。
 pub fn generate_hydro_water_dem(job: &HydroJob) -> Result<()> {
     // 输入齐全性检查：强制 DEM + 已分类(fclass)水体
     validate_hydro_inputs(&job.dem_path, &job.water_path)?;
-    Err(WaterError::NotImplemented("water_hydro::generate_hydro_water_dem"))
+    pipeline::run_hydro_pipeline(job)
 }
 
 /// 便捷入口：用默认设置生成。

@@ -17,6 +17,7 @@ use crate::lake_flatten::{flatten_lake_polygons_on_surface, is_lake_fclass};
 use crate::output::{compose_water_output_array, ComposeMetrics};
 use crate::postprocess::apply_river_dem_floor_lift;
 use crate::river_solve::solve_river_polygon_surface;
+use crate::skirt::apply_water_surface_skirt;
 use crate::OutputMode;
 
 /// 由几何 bounds 计算像素窗口（对应 `_window_from_geometry_bounds` + rasterio `from_bounds`）。
@@ -135,6 +136,7 @@ pub fn compute_water_surface<F>(
     water_fclass: &[Option<String>],
     all_touched: bool,
     output_mode: OutputMode,
+    skirt_pixels: usize,
     tiebreaker_for: F,
 ) -> (Array2<f32>, ComposeMetrics)
 where
@@ -201,8 +203,12 @@ where
     // 5) 河床抬升（河道内解低于 DEM 则夹回 DEM）。
     apply_river_dem_floor_lift(&mut surface, &write_mask, &dem_f32, &river_mask, &lake_mask);
 
-    // 6) 输出组合。
+    // 6) 输出裙边（内 N 平铺水位、外 N 过渡到 DEM，掩膜外扩至 2N）。`skirt_pixels=0` 时为恒等。
+    let mut output_mask = write_mask.clone();
+    apply_water_surface_skirt(&mut surface, &mut output_mask, &dem_f32, skirt_pixels);
+
+    // 7) 输出组合（写入掩膜含裙边）。
     let (output, metrics) =
-        compose_water_output_array(&dem_f32, &surface, &write_mask, output_mode);
+        compose_water_output_array(&dem_f32, &surface, &output_mask, output_mode);
     (output, metrics)
 }
