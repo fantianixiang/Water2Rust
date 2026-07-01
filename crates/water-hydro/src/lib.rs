@@ -19,6 +19,7 @@ use water_core::{error::WaterError, settings::HydroSettings, Result};
 
 pub mod laplace;
 pub mod lake;
+pub mod lake_flatten;
 pub mod output;
 pub mod postprocess;
 

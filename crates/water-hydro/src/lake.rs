@@ -104,20 +104,73 @@ fn masked_finite_values(
     out
 }
 
-/// 栅格化多边形到局部窗口，返回 `(col_off, row_off, mask)`；窗口空或掩膜空时 `None`。
+/// 在 `(height, width)` 栅格上，按 `transform` 将多边形栅格化到其局部窗口。
+///
+/// 返回 `(col_off, row_off, mask)`（mask 为局部窗口尺寸）；空窗口/空掩膜返回 `None`。
+pub fn polygon_window_mask(
+    polygon: &Polygon<f64>,
+    height: usize,
+    width: usize,
+    transform: &[f64; 6],
+    all_touched: bool,
+) -> Option<(usize, usize, Array2<bool>)> {
+    let (col_off, row_off, col_end, row_end, lt) = local_window(polygon, transform, height, width)?;
+    let (lw, lh) = ((col_end - col_off) as u32, (row_end - row_off) as u32);
+    let mask = rasterize_polygon_mask(polygon, &lt, lw, lh, all_touched);
+    if !mask.iter().any(|&b| b) {
+        return None;
+    }
+    Some((col_off, row_off, mask))
+}
+
+/// 栅格化多边形到局部窗口（`all_touched = false`），返回 `(col_off, row_off, mask)`。
 fn polygon_local_mask(
     polygon: &Polygon<f64>,
     dem: &Array2<f32>,
     transform: &[f64; 6],
 ) -> Option<(usize, usize, Array2<bool>)> {
     let (h, w) = dem.dim();
-    let (col_off, row_off, col_end, row_end, lt) = local_window(polygon, transform, h, w)?;
-    let (lw, lh) = ((col_end - col_off) as u32, (row_end - row_off) as u32);
-    let mask = rasterize_polygon_mask(polygon, &lt, lw, lh, false);
-    if !mask.iter().any(|&b| b) {
-        return None;
+    polygon_window_mask(polygon, h, w, transform, false)
+}
+
+/// 岸线环掩膜 = 掩膜 ∩ ~腐蚀(掩膜)；过细（腐蚀后为空）时回退整掩膜。
+fn ring_mask(mask: &Array2<bool>) -> Array2<bool> {
+    let eroded = binary_erosion(mask, 1);
+    let mut ring = Array2::<bool>::from_elem(mask.dim(), false);
+    let mut any = false;
+    for (idx, &m) in mask.indexed_iter() {
+        if m && !eroded[idx] {
+            ring[idx] = true;
+            any = true;
+        }
     }
-    Some((col_off, row_off, mask))
+    if any { ring } else { mask.clone() }
+}
+
+/// 多边形内部所有有限 DEM 值（f64）。空窗口/空掩膜返回空 Vec。
+pub fn interior_dem_values(
+    polygon: &Polygon<f64>,
+    dem: &Array2<f32>,
+    transform: &[f64; 6],
+) -> Vec<f64> {
+    match polygon_local_mask(polygon, dem, transform) {
+        Some((col_off, row_off, mask)) => masked_finite_values(dem, col_off, row_off, &mask),
+        None => Vec::new(),
+    }
+}
+
+/// 多边形岸线环所有有限 DEM 值（f64）。空窗口/空掩膜返回空 Vec。
+pub fn boundary_ring_dem_values(
+    polygon: &Polygon<f64>,
+    dem: &Array2<f32>,
+    transform: &[f64; 6],
+) -> Vec<f64> {
+    match polygon_local_mask(polygon, dem, transform) {
+        Some((col_off, row_off, mask)) => {
+            masked_finite_values(dem, col_off, row_off, &ring_mask(&mask))
+        }
+        None => Vec::new(),
+    }
 }
 
 /// 多边形内部 DEM 中位数。忠实复刻 `_sample_polygon_interior_dem_median`。
@@ -128,10 +181,7 @@ pub fn sample_polygon_interior_dem_median(
     dem: &Array2<f32>,
     transform: &[f64; 6],
 ) -> (f64, usize) {
-    let Some((col_off, row_off, mask)) = polygon_local_mask(polygon, dem, transform) else {
-        return (f64::NAN, 0);
-    };
-    let mut vals = masked_finite_values(dem, col_off, row_off, &mask);
+    let mut vals = interior_dem_values(polygon, dem, transform);
     if vals.is_empty() {
         return (f64::NAN, 0);
     }
@@ -141,29 +191,13 @@ pub fn sample_polygon_interior_dem_median(
 
 /// 多边形岸线环（内一像素带）DEM 迭代截尾中位数。忠实复刻 `_sample_polygon_boundary_ring_dem_median`。
 ///
-/// 岸线环 = 掩膜 ∩ ~腐蚀(掩膜)；多边形过细（腐蚀后为空）时回退整掩膜。
 /// 返回 `(median, finite_pixel_count)`；空时 `(NaN, 0)`。
 pub fn sample_polygon_boundary_ring_dem_median(
     polygon: &Polygon<f64>,
     dem: &Array2<f32>,
     transform: &[f64; 6],
 ) -> (f64, usize) {
-    let Some((col_off, row_off, mask)) = polygon_local_mask(polygon, dem, transform) else {
-        return (f64::NAN, 0);
-    };
-    let eroded = binary_erosion(&mask, 1);
-    let mut ring = Array2::<bool>::from_elem(mask.dim(), false);
-    let mut ring_any = false;
-    for (idx, &m) in mask.indexed_iter() {
-        if m && !eroded[idx] {
-            ring[idx] = true;
-            ring_any = true;
-        }
-    }
-    if !ring_any {
-        ring = mask;
-    }
-    let vals = masked_finite_values(dem, col_off, row_off, &ring);
+    let vals = boundary_ring_dem_values(polygon, dem, transform);
     if vals.is_empty() {
         return (f64::NAN, 0);
     }

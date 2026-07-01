@@ -111,11 +111,22 @@
 - 测试：[crates/water-hydro/tests/stage5b_parity.rs](../crates/water-hydro/tests/stage5b_parity.rs)（5 多边形，含带洞、极扁回退、悬崖高脊）
 - **对拍证据**：内部与岸线环的中位数、像素数**全部 diff = 0（精确一致）**（整数像素对齐，规避栅格化 tie-break）。
 
+### 阶段 5c：湖泊路径端到端（常数水位 + 压平回盖）✅（已对拍）
+
+- Rust：[crates/water-hydro/src/lake_flatten.rs](../crates/water-hydro/src/lake_flatten.rs)
+  `is_lake_fclass` / `compute_lake_constant_z_for_polygon` / `compute_lake_constant_z_for_component` / `flatten_lake_polygons_on_surface`
+- 对应 Python：`hydro/hydro_lake_flatten.py` 同名函数
+- 复刻要点：按 fclass 过滤湖泊多边形（河流忽略）；按 component 分组（无 component 者各自成孤立组）；
+  单多边形取岸线环截尾中位数(回退内部中位数)，多多边形组汇集各多边形环样本再截尾中位数(共享一个水位，消除碎片接缝台阶)；
+  栅格化用 **all_touched=True**，`surface[mask] = constant_z`(f32) 就地覆盖。
+  说明：原 Python 分层还含 tier 1/2（求解节点 z / 剖面样本 z），当前**无河网**流水线中恒为空，故实现 DEM 观测的 tier 0/3（与无网络运行等价）。
+- 测试：[crates/water-hydro/tests/stage5c_parity.rs](../crates/water-hydro/tests/stage5c_parity.rs)（孤立湖 + component 分组两场景，含非湖多边形忽略、悬崖高脊）
+- **对拍证据**：与真实 Python `_flatten_lake_polygons_on_surface` 对拍——压平后 surface 逐像素一致、
+  summary 计数（lake/filled/skipped/filled_pixel）全等、逐多边形常数水位全等（如 component 场景碎片共享 1046.5）。
+
 ### 后续阶段（待实现，逐一对拍）
 
-- [ ] 阶段 5 再续：完整 `_compute_lake_constant_z_for_polygon` 分层选择
-      + `_flatten_lake_polygons_on_surface` 把常数水位盖回求解面（现栏格化两种 all_touched 均已就绪）
-- [ ] 阶段 6：骨架/中轴与河心线 z（`medial_axis` / 横断面 / isotonic）
+- [ ] 阶段 6：河流路径——骨架/中轴与河心线 z（`medial_axis` / 横断面 / isotonic），作为 Laplace 的 Dirichlet 河心 pin 来源
 - [ ] 阶段 7：CRS 解析 + 重投影（工作 CRS ↔ 源网格）
 - [ ] 阶段 8：ROI/瓦片流水线与并行
 - [ ] 阶段 9：端到端在林芝真实数据上与 Python 整体对拍
