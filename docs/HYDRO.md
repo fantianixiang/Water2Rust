@@ -158,10 +158,24 @@
 - 测试：[crates/water-hydro/tests/stage6c_gaussian_parity.rs](../crates/water-hydro/tests/stage6c_gaussian_parity.rs)
 - **对拍证据**：7 例（冲激/随机/斜坡/小数组，σ=0.8~3.0）与 scipy 最大误差 **1.36e-12**（机器精度）。
 
+### 阶段 6c 原语：等渗回归 + 秩滤波 ✅（已对拍）
+
+供河流纵剖面平滑与空间 P30 先验使用。
+
+- **等渗回归（PAVA）**：[crates/water-hydro/src/skeleton_zloc.rs](../crates/water-hydro/src/skeleton_zloc.rs)
+  `isotonic_non_increasing` / `isotonic_non_decreasing`
+  - 对应 Python：`hydro_skeleton_zloc.py::_isotonic_non_increasing`（Pool-Adjacent-Violators，NaN 跳过并保留）。
+  - 测试 [stage6c_isotonic_parity.rs](../crates/water-hydro/tests/stage6c_isotonic_parity.rs)：11 例（含 NaN / 违反序 / 随机）最大误差 **6.82e-13**（加权均值机器精度）。
+- **秩滤波**：[crates/water-core/src/rank_filter.rs](../crates/water-core/src/rank_filter.rs)
+  `percentile_filter_2d` / `median_filter_1d`
+  - 对应 Python：`scipy.ndimage.percentile_filter`（laplace 中 P30 空间先验）、`median_filter`（multi_peak 轻度平滑）。
+  - 秩公式与 scipy `_rank_filter` 一致（percentile：`int(fs*p/100)`，100 时 `fs-1`；median：`fs//2`）；mode='reflect'。
+  - 测试 [stage6c_rankfilter_parity.rs](../crates/water-hydro/tests/stage6c_rankfilter_parity.rs)：10 例（含 +inf 填充 / 多 size / 多 percentile）**0 误差**（秩选择取同一顺序统计量）。
+
 ### 后续阶段（待实现，逐一对拍）
 
-- [ ] 阶段 6c：河流 z_local 管线剩余——`percentile_filter`、骨架沿流排序 / 切线 / junction 检测、
-      横断面 bank 扫描 z、`_isotonic_multi_peak`，最终 `solve_laplace_per_polygon`（岸线环 + 河心 pin 作 Dirichlet）
+- [ ] 阶段 6c：河流 z_local 管线剩余——骨架沿流排序 / 切线 / junction 检测、
+      横断面 bank 扫描 z、`find_peaks` + `_isotonic_multi_peak`，最终 `solve_laplace_per_polygon`（岸线环 + 河心 pin 作 Dirichlet）
 - [ ] 阶段 7：CRS 解析 + 重投影（工作 CRS ↔ 源网格）
 - [ ] 阶段 8：ROI/瓦片流水线与并行
 - [ ] 阶段 9：端到端在林芝真实数据上与 Python 整体对拍

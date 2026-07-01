@@ -48,7 +48,7 @@ pub fn binary_closing(_mask: &Array2<bool>, _iterations: u32) -> Result<Array2<b
 }
 
 /// half-sample 'reflect' 边界索引（对应 scipy 默认 mode='reflect'：d c b a | a b c d | d c b a）。
-fn reflect_index(i: i64, n: i64) -> usize {
+pub(crate) fn reflect_index(i: i64, n: i64) -> usize {
     if n == 1 {
         return 0;
     }
