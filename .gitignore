@@ -18,3 +18,7 @@ Cargo.lock
 .idea/
 .DS_Store
 Thumbs.db
+
+# Python »º´æ
+__pycache__/
+*.pyc
