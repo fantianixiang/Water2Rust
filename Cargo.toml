@@ -3,6 +3,7 @@ members = [
     "apps/water_cli",
     "apps/water_api",
     "gui",
+    "desktop/src-tauri",
     "crates/water-core",
     "crates/water-io",
     "crates/water-fclass",

@@ -1,0 +1,30 @@
+[package]
+name = "water-desktop"
+version = "0.1.0"
+description = "Water2Rust 桌面前端（Tauri 2 后端壳）"
+edition = "2021"
+license.workspace = true
+
+# Tauri 2 约定：库承载 run()，二进制调用之（便于未来移动端）。
+[lib]
+name = "water_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde.workspace = true
+serde_json.workspace = true
+
+# 约束 time < 0.3.52：Tauri 依赖树里的 cookie 0.18.1 与 time 0.3.52+ 的 Parsed::parse
+# 签名变更不兼容（编译报 E0061）。本仓库 gitignore 了 Cargo.lock，故在此显式约束以保可复现。
+time = ">=0.3.36, <0.3.52"
+
+# 业务 crate（Tauri 后端经 #[tauri::command] 直接调用，纯 Rust）。
+water-core.workspace = true
+water-io.workspace = true
+water-fclass.workspace = true
+water-hydro.workspace = true
+water-edge-depth.workspace = true
