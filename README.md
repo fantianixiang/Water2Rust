@@ -15,7 +15,8 @@
 | `fclass` | 水体 fclass 语义分类 | `assign_water_fclass` |
 | `edge-depth` | 水边深度导出 | `export_water_edge_depth` |
 
-提供 **CLI** 与 **REST API** 两种入口。API 形态仿照 `GeoAI_Toolkit/workshop`。
+提供 **CLI**、**REST API** 与 **桌面 GUI** 三种入口。API 形态仿照 `GeoAI_Toolkit/workshop`；
+GUI 为纯 Rust（eframe/egui），直接链接业务 crate，页面布局参考 `MyProject` 的 water 页。
 
 ## 工程结构
 
@@ -23,6 +24,7 @@
 apps/
   water_cli/         # CLI 主入口（bin: water2rust）
   water_api/         # Axum REST API（默认 127.0.0.1:8000）
+gui/                 # 桌面 GUI（bin: water2rust-gui，eframe/egui，纯 Rust）
 crates/
   water-core/        # 错误 / 配置 / 栅格算法（替代 numpy/scipy/skimage）
   water-io/          # 栅格·矢量 IO（经 eci-gdal）
@@ -76,7 +78,21 @@ cargo run --release -p water_cli -- inspect --water waters.shp --dem dem.tif --o
 
 # API（http://127.0.0.1:8000，OpenAPI 端点见 routes）
 cargo run --release -p water_api
+
+# 桌面 GUI（纯 Rust，eframe/egui）
+cargo run --release -p water_gui
 ```
+
+### 桌面 GUI
+
+`water_gui`（bin `water2rust-gui`）是纯 Rust 图形界面，直接链接业务 crate，无子进程、无 Python。
+页面布局参考 `MyProject` 的 water 页：左侧参数区（水体输入 / 输出基名 / DEM / 分类参考库 + 任务勾选），
+右侧实时日志（由 `tracing` 汇入）。
+
+- 任务勾选：`fclass` / `edge` / `hydro`。**`fclass` 是 `edge` / `hydro` 的前置条件，自动注入**。
+- 输出基名派生产物：`<名>_fclass.shp`、`<名>_edge.shp`、`<名>_hydro.tif`。
+- 分类参考库默认指向 `waters_china.gpkg`，可在界面替换；`hydro` 需填 DEM。
+- Windows 自动加载微软雅黑等系统字体以正确显示中文。
 
 ### REST API 端点
 
@@ -100,3 +116,4 @@ cargo run --release -p water_api
 - [x] `water-fclass`（水体语义分类，41/41 要素与 Python 逐一致，见 [docs/FCLASS.md](docs/FCLASS.md)）
 - [x] `water-edge-depth`（水边深度，每 fclass 可配置，见 [docs/EDGE_DEPTH.md](docs/EDGE_DEPTH.md)）
 - [x] `water-hydro`（水面 DEM，最大，见 [docs/HYDRO.md](docs/HYDRO.md)）
+- [x] 桌面 GUI `water_gui`（纯 Rust eframe/egui，串联 fclass/edge/hydro，布局参考 MyProject water 页）

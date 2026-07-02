@@ -1,0 +1,26 @@
+[package]
+name = "water_gui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "water2rust-gui"
+path = "src/main.rs"
+
+[dependencies]
+# 业务 crate（直接链接，零子进程、零 Python）
+water-core.workspace = true
+water-io.workspace = true
+water-fclass.workspace = true
+water-edge-depth.workspace = true
+water-hydro.workspace = true
+
+# GUI 与文件对话框
+eframe.workspace = true
+rfd.workspace = true
+
+# 日志采集（tracing → GUI 日志面板）
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
