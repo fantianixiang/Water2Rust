@@ -126,10 +126,12 @@ _hp._read_dem_to_crs_windowed = _wrap_read_win
 
 from modules.waters import generate_hydro_water_dem
 
-out = Path(f"E:/Projects/Water2Rust/data/tmp/single8_pyseed{SEED}.tif")
+water = os.environ.get("W2R_WATER", "E:/Projects/Water2Rust/data/tmp/single8.shp")
+out_env = os.environ.get("W2R_OUT")
+out = Path(out_env) if out_env else Path(f"E:/Projects/Water2Rust/data/tmp/single8_pyseed{SEED}.tif")
 r = generate_hydro_water_dem(
     dem_path=Path("E:/Projects/Water2Rust/data/linzhi/dem.tif"),
-    water_path=Path("E:/Projects/Water2Rust/data/tmp/single8.shp"),
+    water_path=Path(water),
     output_path=out,
     output_mode="water_surface_with_dem",
     all_touched=True,
