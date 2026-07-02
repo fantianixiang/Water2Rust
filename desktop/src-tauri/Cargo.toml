@@ -15,8 +15,12 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
 serde.workspace = true
 serde_json.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
 
 # 约束 time < 0.3.52：Tauri 依赖树里的 cookie 0.18.1 与 time 0.3.52+ 的 Parsed::parse
 # 签名变更不兼容（编译报 E0061）。本仓库 gitignore 了 Cargo.lock，故在此显式约束以保可复现。
