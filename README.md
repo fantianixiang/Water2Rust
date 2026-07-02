@@ -65,6 +65,12 @@ cargo run --release -p water_cli -- hydro --dem dem.tif --water water.shp --outp
 # 注：hydro 强制要求输入齐全——DEM 与**已分类(含 fclass 字段)**的水体缺一不可；
 #     若水体尚未分类，请先运行 fclass 流程。
 
+# fclass：按水体参考库（GeoPackage）为水体多边形赋予语义类别（river/lake/sea/...）
+cargo run --release -p water_cli -- fclass --water water.shp --output classified.shp --reference-path waters_china.gpkg
+
+# edge-depth：为已分类水体按 fclass 追加 edgeexpand/depth 字段
+cargo run --release -p water_cli -- edge-depth --water classified.shp --output with_depth.shp
+
 # 轻量验证：读水体矢量 + DEM 元数据，采样质心高程并导出 GeoJSON
 cargo run --release -p water_cli -- inspect --water waters.shp --dem dem.tif --output out.geojson
 
@@ -91,4 +97,6 @@ cargo run --release -p water_api
 - [x] `water-io` 真实 IO：DEM 惰性元数据/采样（eci-gdal-geotiff）+ 矢量含属性读取（eci-gdal-vector）+ GeoJSON 导出
 - [x] 轻量 `inspect` 流程，已用林芝真实数据验证（读 41 个水体多边形 + 1.9GB DEM采样，高程 826–4580m）
 - [ ] `water-core::raster_ops` 数值算法（与 scipy/skimage 对拍）
-- [ ] `water-hydro`（水面 DEM，最大）/ `water-fclass` / `water-edge-depth` 业务逻辑
+- [x] `water-fclass`（水体语义分类，41/41 要素与 Python 逐一致，见 [docs/FCLASS.md](docs/FCLASS.md)）
+- [x] `water-edge-depth`（水边深度，每 fclass 可配置，见 [docs/EDGE_DEPTH.md](docs/EDGE_DEPTH.md)）
+- [x] `water-hydro`（水面 DEM，最大，见 [docs/HYDRO.md](docs/HYDRO.md)）

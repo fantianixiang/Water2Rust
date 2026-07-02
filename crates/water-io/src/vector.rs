@@ -188,3 +188,46 @@ pub fn write_polygons_shapefile(
 ) -> Result<()> {
     write_polygon_shapefile(path, polygons, fields, records, prj_wkt).map_err(WaterError::Other)
 }
+
+// ── GeoPackage 多图层读取（经 eci-gdal-vector），供 water-fclass 读分类参照库 ──
+
+/// 列出 GeoPackage 的全部 feature 图层名。
+pub fn list_gpkg_layers(path: &Path) -> Result<Vec<String>> {
+    eci_gdal_vector::list_gpkg_layers(path).map_err(WaterError::Other)
+}
+
+/// 读取 GeoPackage 指定图层的全部几何（native 坐标）+ EPSG。
+pub fn load_gpkg_layer(
+    path: &Path,
+    layer: &str,
+) -> Result<(Vec<geo_types::Geometry<f64>>, Option<u16>)> {
+    let l = eci_gdal_vector::load_gpkg_layer(path, layer).map_err(WaterError::Other)?;
+    Ok((l.geometries, l.epsg))
+}
+
+// ── 几何重投影（经 eci-gdal-proj），供 fclass 统一到工作 CRS（EPSG:3857）──
+
+/// 将几何逐坐标从 `src_epsg` 重投影到 `dst_epsg`（经 eci-gdal-proj / proj4rs）。
+pub fn reproject_geometry(
+    geom: &geo_types::Geometry<f64>,
+    src_epsg: u16,
+    dst_epsg: u16,
+) -> Result<geo_types::Geometry<f64>> {
+    if src_epsg == dst_epsg {
+        return Ok(geom.clone());
+    }
+    let src = eci_gdal_core::RasterCrs::Epsg(src_epsg)
+        .proj()
+        .map_err(WaterError::Other)?;
+    let dst = eci_gdal_core::RasterCrs::Epsg(dst_epsg)
+        .proj()
+        .map_err(WaterError::Other)?;
+    use geo::MapCoords;
+    let out = geom
+        .try_map_coords(|c| {
+            let (x, y) = eci_gdal_proj::transform::transform_point(&src, &dst, c.x, c.y)?;
+            Ok::<_, anyhow::Error>(geo_types::Coord { x, y })
+        })
+        .map_err(WaterError::Other)?;
+    Ok(out)
+}
