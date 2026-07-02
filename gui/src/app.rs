@@ -6,6 +6,7 @@ use std::thread;
 
 use eframe::egui::{self, Color32, RichText};
 
+use crate::edge_settings::{self, EdgeParam};
 use crate::log::GuiEvent;
 use crate::pipeline::{self, PipelineParams};
 use crate::theme;
@@ -60,6 +61,10 @@ pub struct WaterGuiApp {
     do_hydro: bool,
     hydro_with_dem: bool,
 
+    /// edge 参数子窗口：每 fclass 的 edge/depth 可调值与显隐开关。
+    edge_params: Vec<EdgeParam>,
+    show_edge_settings: bool,
+
     running: bool,
     task_bars: Vec<TaskBar>,
     log: String,
@@ -86,6 +91,8 @@ impl WaterGuiApp {
             do_edge: false,
             do_hydro: false,
             hydro_with_dem: false,
+            edge_params: edge_settings::default_params(),
+            show_edge_settings: false,
             running: false,
             task_bars: Vec::new(),
             log: String::new(),
@@ -158,6 +165,7 @@ impl WaterGuiApp {
             do_edge: self.do_edge,
             do_hydro: self.do_hydro,
             hydro_with_dem: self.hydro_with_dem,
+            edge_config: edge_settings::to_config(&self.edge_params),
         };
 
         self.running = true;
@@ -221,6 +229,9 @@ impl eframe::App for WaterGuiApp {
 
         // 右侧下部：详细日志。
         egui::CentralPanel::default().show(ctx, |ui| self.log_ui(ui));
+
+        // edge 参数设置子窗口（浮动，按需显示）。
+        edge_settings::settings_window(ctx, &mut self.show_edge_settings, &mut self.edge_params);
     }
 }
 
@@ -274,6 +285,13 @@ impl WaterGuiApp {
             ui.horizontal(|ui| {
                 ui.checkbox(&mut self.do_fclass, "水域分类 (fclass)");
                 ui.checkbox(&mut self.do_edge, "边缘深度 (edge)");
+                if ui
+                    .button("⚙")
+                    .on_hover_text("设置 edge 参数（每类别 edgeexpand/depth）")
+                    .clicked()
+                {
+                    self.show_edge_settings = true;
+                }
                 ui.checkbox(&mut self.do_hydro, "水文DEM (hydro)");
             });
             ui.horizontal(|ui| {

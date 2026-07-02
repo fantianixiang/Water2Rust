@@ -10,6 +10,8 @@ use water_edge_depth::EdgeDepthOptions;
 use water_fclass::FclassOptions;
 use water_hydro::OutputMode;
 
+use water_core::edge_depth::EdgeDepthConfig;
+
 use crate::log::GuiEvent;
 
 /// 一次运行的全部参数（由 UI 收集）。
@@ -23,6 +25,8 @@ pub struct PipelineParams {
     pub do_edge: bool,
     pub do_hydro: bool,
     pub hydro_with_dem: bool,
+    /// edge 阶段的每 fclass edge/depth 配置（来自 GUI 子窗口）。
+    pub edge_config: EdgeDepthConfig,
 }
 
 /// 依输出基名派生某任务的产物路径：`<dir>/<stem>_<suffix>.<ext>`。
@@ -77,7 +81,7 @@ fn execute(p: &PipelineParams, tx: &Sender<GuiEvent>) -> anyhow::Result<Vec<(Str
         let _ = tx.send(GuiEvent::TaskStart("edge".to_string()));
         let out = derive_path(&p.output_path, "edge", "shp");
         tracing::info!("[2] edge 水边深度：{} → {}", classified.display(), out.display());
-        let opts = EdgeDepthOptions::default();
+        let opts = EdgeDepthOptions { config: p.edge_config.clone() };
         water_edge_depth::export_water_edge_depth(&classified, &out, &opts)?;
         outputs.push(("edge".to_string(), out.with_extension("shp")));
         let _ = tx.send(GuiEvent::TaskDone("edge".to_string()));
