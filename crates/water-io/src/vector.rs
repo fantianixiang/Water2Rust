@@ -5,11 +5,12 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use eci_gdal_vector::{
-    VectorCrsStatus, VectorFieldValue, open_vector_source, read_dbf_records, read_dbf_schema,
-    read_shapefile_crs_metadata, to_vector_field_value,
+    write_polygon_shapefile, FieldDefn, VectorCrsStatus, VectorFieldType, VectorFieldValue,
+    open_vector_source, read_dbf_records, read_dbf_schema, read_shapefile_crs_metadata,
+    to_vector_field_value,
 };
 use serde_json::Value;
-use water_core::error::Result;
+use water_core::error::{Result, WaterError};
 
 /// 一个带属性的矢量要素。
 #[derive(Debug, Clone)]
@@ -119,4 +120,71 @@ fn json_num(f: f64) -> Value {
     serde_json::Number::from_f64(f)
         .map(Value::Number)
         .unwrap_or(Value::Null)
+}
+
+// ── Shapefile 写入（经 eci-gdal-vector），供 water-edge-depth 属性富化后写出 ──
+
+/// 写入用字段/值类型 re-export（经 eci-gdal-vector）。
+pub use eci_gdal_vector::{ShpFieldDef, ShpFieldType, ShpValue};
+
+/// dbf 字段类型 → 写入用 `ShpFieldType`（字符类归 Character，数值类归 Numeric）。
+fn map_dbf_field(f: &FieldDefn) -> ShpFieldDef {
+    let ty = match f.field_type {
+        VectorFieldType::Character
+        | VectorFieldType::Date
+        | VectorFieldType::Logical
+        | VectorFieldType::Memo
+        | VectorFieldType::DateTime => ShpFieldType::Character { length: f.width.max(1) },
+        VectorFieldType::Numeric
+        | VectorFieldType::Float
+        | VectorFieldType::Currency
+        | VectorFieldType::Integer
+        | VectorFieldType::Double => ShpFieldType::Numeric {
+            length: f.width.max(1),
+            decimals: f.precision.unwrap_or(0),
+        },
+    };
+    ShpFieldDef { name: f.name.clone(), ty }
+}
+
+/// 读取 shapefile 的 dbf 字段定义（保留原字段名/类型/宽度），供属性透传写出。
+pub fn read_shapefile_fields(path: &Path) -> Result<Vec<ShpFieldDef>> {
+    let dbf = path.with_extension("dbf");
+    let schema = read_dbf_schema(&dbf).map_err(WaterError::Other)?;
+    Ok(schema.fields.iter().map(map_dbf_field).collect())
+}
+
+/// 将属性 JSON 值按目标字段类型转为写入用 `ShpValue`。
+pub fn json_to_shp_value(value: Option<&Value>, ty: &ShpFieldType) -> ShpValue {
+    match ty {
+        ShpFieldType::Numeric { .. } => {
+            let n = match value {
+                Some(Value::Number(n)) => n.as_f64(),
+                Some(Value::String(s)) => s.trim().parse::<f64>().ok(),
+                Some(Value::Bool(b)) => Some(if *b { 1.0 } else { 0.0 }),
+                _ => None,
+            };
+            ShpValue::Number(n)
+        }
+        ShpFieldType::Character { .. } => {
+            let s = match value {
+                Some(Value::String(s)) => Some(s.clone()),
+                Some(Value::Number(n)) => Some(n.to_string()),
+                Some(Value::Bool(b)) => Some(b.to_string()),
+                _ => None,
+            };
+            ShpValue::Text(s)
+        }
+    }
+}
+
+/// 写多边形 shapefile（经 eci-gdal-vector）。`polygons[i]` 与 `records[i]` 平行。
+pub fn write_polygons_shapefile(
+    path: &Path,
+    polygons: &[geo_types::MultiPolygon<f64>],
+    fields: &[ShpFieldDef],
+    records: &[Vec<ShpValue>],
+    prj_wkt: Option<&str>,
+) -> Result<()> {
+    write_polygon_shapefile(path, polygons, fields, records, prj_wkt).map_err(WaterError::Other)
 }

@@ -37,12 +37,17 @@ pub struct FclassRequest {
 pub struct EdgeDepthRequest {
     pub water: String,
     pub output: String,
-    #[serde(default = "default_true")]
-    pub all_touched: bool,
+    /// 每 fclass 的 edge/depth 覆盖（GUI 调参）；未列出的 fclass 用默认 `WATER_FCLASS_EDGE_DEPTH`。
+    #[serde(default)]
+    pub overrides: Vec<EdgeDepthOverride>,
 }
 
-fn default_true() -> bool {
-    true
+/// 单个 fclass 的 edge/depth 覆盖值（GUI 滑块结果）。范围提示见 `water_core::edge_depth::edge_depth_guidance`。
+#[derive(Debug, Clone, Deserialize)]
+pub struct EdgeDepthOverride {
+    pub fclass: String,
+    pub edgeexpand: f64,
+    pub depth: f64,
 }
 
 /// 任务状态快照（轮询 / SSE 返回）。

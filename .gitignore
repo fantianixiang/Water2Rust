@@ -22,3 +22,6 @@ Thumbs.db
 # Python »º´æ
 __pycache__/
 *.pyc
+
+# Separate local repo, syncs to eci-gdal (not Water2Rust)
+eci-gdal-contrib/

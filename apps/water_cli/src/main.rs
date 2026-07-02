@@ -38,7 +38,17 @@ fn main() -> Result<()> {
             water_fclass::run_fclass(&args.water, &args.output, &opts)?;
         }
         Command::EdgeDepth(args) => {
-            let opts = EdgeDepthOptions { all_touched: args.all_touched };
+            let mut config = water_core::edge_depth::EdgeDepthConfig::default();
+            for s in &args.set {
+                let p: Vec<&str> = s.split(':').collect();
+                if p.len() != 3 {
+                    anyhow::bail!("--set 格式应为 fclass:edgeexpand:depth，收到：{s}");
+                }
+                let edge: f64 = p[1].parse().map_err(|_| anyhow::anyhow!("edgeexpand 非数值：{}", p[1]))?;
+                let depth: f64 = p[2].parse().map_err(|_| anyhow::anyhow!("depth 非数值：{}", p[2]))?;
+                config.set(p[0], edge, depth)?;
+            }
+            let opts = EdgeDepthOptions { config };
             water_edge_depth::export_water_edge_depth(&args.water, &args.output, &opts)?;
         }
     }

@@ -4,6 +4,7 @@
 //! 以及散落在各模块的 numpy / scipy / skimage 数值算法（改造为纯 Rust）。
 
 pub mod error;
+pub mod edge_depth;
 pub mod edt;
 pub mod find_peaks;
 pub mod medial;

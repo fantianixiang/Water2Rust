@@ -91,13 +91,14 @@ pub struct FclassArgs {
 
 #[derive(Debug, Parser)]
 pub struct EdgeDepthArgs {
-    /// 水体多边形输入。
+    /// 水体多边形输入（含 fclass）。
     #[arg(long)]
     pub water: PathBuf,
     /// 输出 shapefile 路径。
     #[arg(long)]
     pub output: PathBuf,
-    /// 栅格化时 all_touched。
-    #[arg(long, default_value_t = true)]
-    pub all_touched: bool,
+    /// 覆盖某 fclass 的 edge/depth，格式 `fclass:edgeexpand:depth`，可重复。
+    /// 例：`--set river:12:3.1 --set lake:20:5`。未指定则用默认（`WATER_FCLASS_EDGE_DEPTH`）。
+    #[arg(long = "set", value_name = "FCLASS:EDGE:DEPTH")]
+    pub set: Vec<String>,
 }
