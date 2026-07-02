@@ -10,6 +10,10 @@ use tracing_subscriber::fmt::MakeWriter;
 pub enum GuiEvent {
     /// 一行（或一段）日志文本。
     Log(String),
+    /// 某任务阶段开始（`key` ∈ fclass / edge / hydro）。
+    TaskStart(String),
+    /// 某任务阶段完成。
+    TaskDone(String),
     /// 流水线成功，附各任务的产物路径。
     Done(Vec<(String, PathBuf)>),
     /// 流水线失败，附错误描述。

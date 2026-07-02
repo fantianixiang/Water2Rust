@@ -37,7 +37,7 @@ fn derive_path(base: &Path, suffix: &str, ext: &str) -> PathBuf {
 
 /// 在后台线程中执行流水线；进度经 `tracing` 汇入 GUI 日志，终态经 `tx` 回传。
 pub fn run(params: PipelineParams, tx: Sender<GuiEvent>) {
-    match execute(&params) {
+    match execute(&params, &tx) {
         Ok(outputs) => {
             let _ = tx.send(GuiEvent::Done(outputs));
         }
@@ -48,12 +48,14 @@ pub fn run(params: PipelineParams, tx: Sender<GuiEvent>) {
     }
 }
 
-fn execute(p: &PipelineParams) -> anyhow::Result<Vec<(String, PathBuf)>> {
+fn execute(p: &PipelineParams, tx: &Sender<GuiEvent>) -> anyhow::Result<Vec<(String, PathBuf)>> {
     let mut outputs: Vec<(String, PathBuf)> = Vec::new();
 
     // fclass 为前置：任一任务选中都需先产出已分类水体。
     let need_fclass = p.do_fclass || p.do_edge || p.do_hydro;
+
     let classified = if need_fclass {
+        let _ = tx.send(GuiEvent::TaskStart("fclass".to_string()));
         let out = derive_path(&p.output_path, "fclass", "shp");
         tracing::info!("[1] fclass 分类：{} → {}", p.water_path.display(), out.display());
         let opts = FclassOptions {
@@ -65,20 +67,24 @@ fn execute(p: &PipelineParams) -> anyhow::Result<Vec<(String, PathBuf)>> {
         if p.do_fclass {
             outputs.push(("fclass".to_string(), shp.clone()));
         }
+        let _ = tx.send(GuiEvent::TaskDone("fclass".to_string()));
         shp
     } else {
         p.water_path.clone()
     };
 
     if p.do_edge {
+        let _ = tx.send(GuiEvent::TaskStart("edge".to_string()));
         let out = derive_path(&p.output_path, "edge", "shp");
         tracing::info!("[2] edge 水边深度：{} → {}", classified.display(), out.display());
         let opts = EdgeDepthOptions::default();
         water_edge_depth::export_water_edge_depth(&classified, &out, &opts)?;
         outputs.push(("edge".to_string(), out.with_extension("shp")));
+        let _ = tx.send(GuiEvent::TaskDone("edge".to_string()));
     }
 
     if p.do_hydro {
+        let _ = tx.send(GuiEvent::TaskStart("hydro".to_string()));
         let dem = p
             .dem_path
             .as_ref()
@@ -92,6 +98,7 @@ fn execute(p: &PipelineParams) -> anyhow::Result<Vec<(String, PathBuf)>> {
         tracing::info!("[3] hydro 水面 DEM：{} + {} → {}", dem.display(), classified.display(), out.display());
         water_hydro::run(dem, &classified, &out, mode)?;
         outputs.push(("hydro".to_string(), out));
+        let _ = tx.send(GuiEvent::TaskDone("hydro".to_string()));
     }
 
     tracing::info!("流水线完成，产物 {} 项", outputs.len());

@@ -31,6 +31,20 @@ fn browse(kind: Pick) -> Option<PathBuf> {
     }
 }
 
+/// 失败态进度条颜色。
+const DANGER: Color32 = Color32::from_rgb(0xDC, 0x26, 0x26);
+
+/// 单个任务的进度条状态。
+struct TaskBar {
+    /// 任务键（fclass / edge / hydro）。
+    key: String,
+    /// 显示名。
+    name: String,
+    running: bool,
+    done: bool,
+    failed: bool,
+}
+
 /// Water2Rust GUI 应用状态。
 pub struct WaterGuiApp {
     rx: Receiver<GuiEvent>,
@@ -47,6 +61,7 @@ pub struct WaterGuiApp {
     hydro_with_dem: bool,
 
     running: bool,
+    task_bars: Vec<TaskBar>,
     log: String,
     outputs: Vec<(String, PathBuf)>,
 }
@@ -72,6 +87,7 @@ impl WaterGuiApp {
             do_hydro: false,
             hydro_with_dem: false,
             running: false,
+            task_bars: Vec::new(),
             log: String::new(),
             outputs: Vec::new(),
         }
@@ -82,6 +98,17 @@ impl WaterGuiApp {
         while let Ok(evt) = self.rx.try_recv() {
             match evt {
                 GuiEvent::Log(s) => self.log.push_str(&s),
+                GuiEvent::TaskStart(key) => {
+                    if let Some(bar) = self.task_bars.iter_mut().find(|b| b.key == key) {
+                        bar.running = true;
+                    }
+                }
+                GuiEvent::TaskDone(key) => {
+                    if let Some(bar) = self.task_bars.iter_mut().find(|b| b.key == key) {
+                        bar.running = false;
+                        bar.done = true;
+                    }
+                }
                 GuiEvent::Done(outputs) => {
                     self.outputs = outputs;
                     self.running = false;
@@ -89,6 +116,11 @@ impl WaterGuiApp {
                 }
                 GuiEvent::Failed(msg) => {
                     self.running = false;
+                    // 把当前正在运行的任务标记为失败。
+                    if let Some(bar) = self.task_bars.iter_mut().find(|b| b.running) {
+                        bar.running = false;
+                        bar.failed = true;
+                    }
                     self.log.push_str(&format!("\n[失败] {msg}\n"));
                 }
             }
@@ -129,9 +161,35 @@ impl WaterGuiApp {
         };
 
         self.running = true;
+        self.build_task_bars();
         self.log.push_str("\n───────── 开始运行 ─────────\n");
         let tx = self.tx.clone();
         thread::spawn(move || pipeline::run(params, tx));
+    }
+
+    /// 依当前勾选构建将运行的任务进度条列表（fclass 为前置，自动注入）。
+    fn build_task_bars(&mut self) {
+        let need_fclass = self.do_fclass || self.do_edge || self.do_hydro;
+        let mut bars = Vec::new();
+        let mut push = |key: &str, name: &str| {
+            bars.push(TaskBar {
+                key: key.to_string(),
+                name: name.to_string(),
+                running: false,
+                done: false,
+                failed: false,
+            })
+        };
+        if need_fclass {
+            push("fclass", "水域分类 (fclass)");
+        }
+        if self.do_edge {
+            push("edge", "边缘深度 (edge)");
+        }
+        if self.do_hydro {
+            push("hydro", "水文DEM (hydro)");
+        }
+        self.task_bars = bars;
     }
 }
 
@@ -146,7 +204,7 @@ impl eframe::App for WaterGuiApp {
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 ui.heading(RichText::new("Water2Rust").color(theme::ACCENT).strong());
-                ui.label(RichText::new("水体处理工具链 · 纯 Rust").color(theme::MUTED));
+                ui.label(RichText::new("水体处理工具链").color(theme::MUTED));
             });
             ui.add_space(6.0);
         });
@@ -156,6 +214,12 @@ impl eframe::App for WaterGuiApp {
             .default_width(460.0)
             .show(ctx, |ui| self.params_ui(ui));
 
+        // 右侧上部：任务进度 + 结果信息（固定高度，随内容自适应）。
+        egui::TopBottomPanel::top("progress")
+            .resizable(false)
+            .show(ctx, |ui| self.progress_ui(ui));
+
+        // 右侧下部：详细日志。
         egui::CentralPanel::default().show(ctx, |ui| self.log_ui(ui));
     }
 }
@@ -245,22 +309,82 @@ impl WaterGuiApp {
         });
     }
 
+    /// 右侧上部：按任务分别显示进度条 + 结果信息（保存位置）。
+    fn progress_ui(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("任务进度").size(16.0).strong());
+            if self.running {
+                ui.spinner();
+            }
+        });
+        ui.add_space(4.0);
+
+        if self.task_bars.is_empty() {
+            // 未开始任何任务：不显示进度条，仅给出提示。
+            ui.label(
+                RichText::new("勾选任务并点击「运行」后，将按任务分别显示进度")
+                    .size(12.0)
+                    .color(theme::MUTED),
+            );
+        } else {
+            for bar in &self.task_bars {
+                let (fraction, animate, status, color) = if bar.failed {
+                    (1.0_f32, false, "失败", DANGER)
+                } else if bar.done {
+                    (1.0, false, "完成", theme::ACCENT)
+                } else if bar.running {
+                    (1.0, true, "运行中…", theme::ACCENT)
+                } else {
+                    (0.0, false, "等待中", theme::MUTED)
+                };
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(&bar.name).strong());
+                    ui.label(RichText::new(status).size(12.0).color(color));
+                });
+                ui.add(
+                    egui::ProgressBar::new(fraction)
+                        .animate(animate)
+                        .fill(color)
+                        .text(status),
+                );
+                ui.add_space(4.0);
+            }
+        }
+
+        ui.add_space(4.0);
+        if self.outputs.is_empty() {
+            ui.label(
+                RichText::new("结果保存位置将显示在此处")
+                    .size(12.0)
+                    .color(theme::MUTED),
+            );
+        } else {
+            ui.label(RichText::new("结果已保存：").strong());
+            for (task, path) in &self.outputs {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(format!("[{task}]")).color(theme::ACCENT).strong());
+                    ui.label(RichText::new(path.display().to_string()).monospace());
+                });
+            }
+            if let Some(dir) = self.outputs.first().and_then(|(_, p)| p.parent()) {
+                let dir = dir.to_path_buf();
+                if ui.button("打开输出目录").clicked() {
+                    open_in_explorer(&dir);
+                }
+            }
+        }
+        ui.add_space(6.0);
+    }
+
+    /// 右侧下部：详细日志。
     fn log_ui(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.label(RichText::new("日志信息").size(16.0).strong());
+            ui.label(RichText::new("详细日志").size(16.0).strong());
             if ui.button("清空日志").clicked() {
                 self.log.clear();
             }
         });
-        if !self.outputs.is_empty() {
-            ui.add_space(2.0);
-            for (task, path) in &self.outputs {
-                ui.label(
-                    RichText::new(format!("[{task}] → {}", path.display()))
-                        .color(theme::ACCENT),
-                );
-            }
-        }
         ui.add_space(4.0);
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
@@ -274,6 +398,18 @@ impl WaterGuiApp {
                         .interactive(false),
                 );
             });
+    }
+}
+
+/// 在系统文件管理器中打开目录（Windows 用 explorer）。
+fn open_in_explorer(dir: &std::path::Path) {
+    #[cfg(target_os = "windows")]
+    {
+        let _ = std::process::Command::new("explorer").arg(dir).spawn();
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = dir;
     }
 }
 
