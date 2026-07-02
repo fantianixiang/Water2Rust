@@ -337,3 +337,34 @@ warp 到工作网格 → `compute_water_surface` → 投回源网格 → 组合�
 > identity，并猴子补丁绕过本机 `rasterio.windows.from_bounds` 的 PROJ 原生崩溃，端到端跑出确定性 Python 参照）；
 > 逐像素对拍见对应 `scripts/` 分析脚本。
 
+> **重要更正（方案 B 实为与生产参照一致）**：Python 有两条输出路径——**非瓦片**（小场景）先在工作网格
+> 组合 `DEM_work+surface` 再整体投回（scheme A，背景双重重采样），**瓦片**（`_process_water_tile_body`，
+> 大场景）则**只投回 surface+mask，再与精确源 DEM tile 组合**（正是 scheme B）。林芝全域 `waters.tif`
+> 工作网格 276M 超预算，走的是**瓦片路径 = scheme B**。故本仓库方案 B 的背景与真实 `waters.tif`
+> **逐位一致**（全域条带对比背景 p50=p99=0，见下「瓦片路径」）。上面 0.33m 仅是与**非瓦片** Python 的差。
+
+### 瓦片路径（`_generate_hydro_water_dem_tiled`）✅（全域跑通 + 背景 bit 级一致）
+
+- Rust：[crates/water-hydro/src/pipeline.rs](../crates/water-hydro/src/pipeline.rs)
+  `run_hydro_pipeline_tiled` / `process_window`（提取的可复用「padded 窗口→core」处理）。
+- 对应 Python：`hydro_tile_runner.py::_generate_hydro_water_dem_tiled` / `_process_water_tile_body`。
+- **分派**：整窗工作网格 ≤ `HYDRO_MAX_FULL_RASTER_PIXELS`(2.5e8) 走单窗，否则瓦片。
+- **瓦片**：源网格按 `HYDRO_TILED_TILE_SIZE`=8192 分块，pad=`max(50,64)`=64px。
+  与水体相交的瓦片：`process_window`（读 DEM tile±pad → warp 到工作网格 → `compute_water_surface`
+  → 投回 padded 源窗口 → 与精确源 DEM 组合 → 提取 core）；dry 瓦片保留源 DEM/nodata。
+  峰值工作内存 ~ 单瓦片规模，故可处理超预算场景。
+- **对拍证据（林芝全域 41 多边形）**：
+  - Rust 与 Python 分块**完全一致**：grid=(3,4)、12 瓦片、**6 水瓦片 + 6 dry**；
+  - **与 Python identity 全域参照逐像素对拍**（`full_pyident.tif`，两边同用 identity tiebreaker）：
+    4.507 亿重叠有效像素、**0 像素仅单边有效**；**整体 mean 0.00047m（0.5mm）、99.74% 像素 < 1cm**；
+    diff>1m 仅 0.0072%、diff>5m 仅 0.0002%（974 像素）；
+  - 与真实 `waters.tif`（随机 tiebreak）逐条带对比：**背景 DEM 逐位一致（p50=p99=0）**；
+  - 残留 >5m 的 974 像素**0% 在瓦片接缝**（拼接无缝），全部落在 river 的**浮空穹顶/陡岸**局部簇——
+    算法固有不稳定：栅格化偶发 1px 边界翻转 → identity 秩偏移 → 骨架微变，在敏感穹顶处放大
+    （与 `medial_axis` 随机性同源、不可约，见决策 2 与 `data/tmp/FLOATING_diagnosis.md`）；
+  - Rust 全域约 2 分钟（单线程），输出 26492×18138 全幅。
+- **已知差异**：Python 瓦片对 `lake`/`water` fclass 有「静水常数 z」快捷（still-water tile）+ 源网格
+  湖泊再压平；本 Rust 当前对湖泊按 `compute_water_surface` 内的 `lake_flatten` 处理，跨瓦片大湖的
+  常数水位可能与 Python 的全局 `lake_constant_z_map` 略异（河流水面不受影响）。
+
+

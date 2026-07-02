@@ -136,5 +136,6 @@ r = generate_hydro_water_dem(
     output_mode="water_surface_with_dem",
     all_touched=True,
     debug=False,
+    tile_workers=1,  # inline：worker 池在 Windows spawn 下不会重跑猴补丁，必须单进程
 )
 print("OUT", r, flush=True)
