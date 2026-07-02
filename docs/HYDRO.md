@@ -367,4 +367,25 @@ warp 到工作网格 → `compute_water_surface` → 投回源网格 → 组合�
   湖泊再压平；本 Rust 当前对湖泊按 `compute_water_surface` 内的 `lake_flatten` 处理，跨瓦片大湖的
   常数水位可能与 Python 的全局 `lake_constant_z_map` 略异（河流水面不受影响）。
 
+## 后续优化（TODO）
+
+按优先级排列，均为**在已达成 parity 基础上的增强**，不改变数值结果（除非注明）：
+
+1. **瓦片并行化（rayon）**：当前瓦片路径单线程（林芝全域约 2 分钟）。各水瓦片相互独立，可用 `rayon`
+   并行处理（对标 Python `tile_workers`）。注意输出写入需汇总到主线程（Rust 侧 `write_geotiff_f32`
+   目前一次性写全幅数组，天然线程安全；仅瓦片计算并行即可）。预期近线性加速。
+2. **跨瓦片大湖的全局 `lake_constant_z` 一致性**：复刻 Python 的两段式——(a) 全局预计算每个湖泊
+   component 的常数水位 `lake_constant_z_map`；(b) 各瓦片求解后在**源网格**对湖泊多边形再压平覆盖。
+   消除跨瓦片大湖在瓦片边界的常数水位微差（当前「已知差异」项）。
+3. **瓦片路径自动化回归测试**：把「Rust 瓦片输出 vs Python identity 参照」固化为夹具化回归
+   （小型多瓦片场景），纳入 `cargo test`，防止后续改动引入瓦片接缝/分块回归。
+4. **流式瓦片写出**：当前全幅输出先在内存组装整幅 f32（约 1.9GB）再写。可改为**边算边写**的
+   tiled/BigTIFF 流式写入（对标 Python `blockxsize=512` + LZW），把峰值内存从「全幅」降到「单瓦片」。
+   需为 `water-io` 增加分块 GeoTIFF 写入器。
+5. **（可选，偏离忠实复刻）浮空水面修复开关**：原 Python 算法存在浮空水面穹顶缺陷
+   （全域 348 处、最高 99.7m，见 `data/tmp/FLOATING_diagnosis.md` 与决策 2 根因）。已确认 Rust 忠实
+   复刻之。如需修复，建议加一个**默认关闭**的开关：`surface = min(surface, 局部 min(左右岸 DEM))`
+   （物理上禁止水面高于较低岸），开启则修浮空、关闭保持与 Python 逐位一致。
+
+
 
