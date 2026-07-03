@@ -29,6 +29,8 @@ interface WaterState {
   hydroWithDem: boolean;
 
   running: boolean;
+  startedAt: number | null;
+  elapsedMs: number | null;
   taskBars: TaskBar[];
   log: string;
   outputs: TaskOutput[];
@@ -65,6 +67,8 @@ export const useWaterStore = create<WaterState>((set, get) => ({
   hydroWithDem: false,
 
   running: false,
+  startedAt: null,
+  elapsedMs: null,
   taskBars: [],
   log: "",
   outputs: [],
@@ -98,6 +102,8 @@ export const useWaterStore = create<WaterState>((set, get) => ({
       bars.push({ key: "hydro", name: TASK_NAMES.hydro, status: "pending" });
     set({
       running: true,
+      startedAt: Date.now(),
+      elapsedMs: null,
       taskBars: bars,
       outputs: [],
       log: s.log + "\n───────── 开始运行 ─────────\n",
@@ -112,18 +118,28 @@ export const useWaterStore = create<WaterState>((set, get) => ({
     })),
 
   finish: (outputs) =>
-    set((s) => ({
-      running: false,
-      outputs,
-      log: s.log + "\n[完成] 运行成功。\n",
-    })),
+    set((s) => {
+      const elapsedMs = s.startedAt ? Date.now() - s.startedAt : null;
+      const secs = elapsedMs != null ? (elapsedMs / 1000).toFixed(1) : "?";
+      return {
+        running: false,
+        elapsedMs,
+        outputs,
+        log: s.log + `\n[完成] 运行成功，耗时 ${secs}s。\n`,
+      };
+    }),
 
   fail: (msg) =>
-    set((s) => ({
-      running: false,
-      taskBars: s.taskBars.map((b) =>
-        b.status === "running" ? { ...b, status: "failed" } : b
-      ),
-      log: s.log + `\n[失败] ${msg}\n`,
-    })),
+    set((s) => {
+      const elapsedMs = s.startedAt ? Date.now() - s.startedAt : null;
+      const secs = elapsedMs != null ? (elapsedMs / 1000).toFixed(1) : "?";
+      return {
+        running: false,
+        elapsedMs,
+        taskBars: s.taskBars.map((b) =>
+          b.status === "running" ? { ...b, status: "failed" as const } : b
+        ),
+        log: s.log + `\n[失败] ${msg}（耗时 ${secs}s）\n`,
+      };
+    }),
 }));

@@ -1,4 +1,5 @@
-import { CheckCircle2, ListChecks, Loader2 } from "lucide-react";
+import { useEffect, useState } from "react";
+import { CheckCircle2, Clock, ListChecks, Loader2 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
@@ -24,6 +25,29 @@ function statusMeta(status: TaskStatus): {
   }
 }
 
+/** 运行耗时显示：运行中实时计时，结束后定格。 */
+function ElapsedBadge() {
+  const running = useWaterStore((s) => s.running);
+  const startedAt = useWaterStore((s) => s.startedAt);
+  const elapsedMs = useWaterStore((s) => s.elapsedMs);
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!running) return;
+    const id = setInterval(() => setNow(Date.now()), 100);
+    return () => clearInterval(id);
+  }, [running]);
+
+  const ms = running && startedAt ? now - startedAt : elapsedMs;
+  if (ms == null) return null;
+  return (
+    <Badge variant={running ? "default" : "secondary"} className="ml-auto gap-1 tabular-nums">
+      <Clock className="h-3 w-3" />
+      {(ms / 1000).toFixed(1)}s
+    </Badge>
+  );
+}
+
 /** 右上：按选中任务分别显示进度条 + 结果保存位置。 */
 export function WaterProgressPanel() {
   const running = useWaterStore((s) => s.running);
@@ -36,6 +60,7 @@ export function WaterProgressPanel() {
         <ListChecks className="h-4 w-4 text-muted-foreground" />
         <h2 className="text-sm font-semibold">任务进度</h2>
         {running && <Loader2 className="h-4 w-4 animate-spin text-primary" />}
+        <ElapsedBadge />
       </div>
 
       {taskBars.length === 0 ? (
