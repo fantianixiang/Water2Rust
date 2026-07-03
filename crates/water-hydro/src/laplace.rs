@@ -79,6 +79,28 @@ pub fn solve_laplace_dirichlet(
     dirichlet_mask: &Array2<bool>,
     dirichlet_z: &Array2<f64>,
 ) -> Array2<f64> {
+    // GPU 分派（feature `gpu`）：内部变量数达阈值时用 matrix-free FP64 PCG（GPU），
+    // 未收敛/失败自动回退 CPU faer。阈值依 profile 交叉点（见 docs/CUDA.md 路径 B）。
+    #[cfg(feature = "gpu")]
+    {
+        let n_int = count_interior_vars(poly_mask, dirichlet_mask);
+        if n_int >= GPU_PCG_MIN_VARS {
+            if let Some(gpu_result) =
+                solve_laplace_dirichlet_gpu(poly_mask, dirichlet_mask, dirichlet_z)
+            {
+                return gpu_result;
+            }
+        }
+    }
+    solve_laplace_dirichlet_cpu(poly_mask, dirichlet_mask, dirichlet_z)
+}
+
+/// CPU faer 直接稀疏 Cholesky 求解（原实现）。始终可用；GPU 未启用或回退时走此路径。
+pub fn solve_laplace_dirichlet_cpu(
+    poly_mask: &Array2<bool>,
+    dirichlet_mask: &Array2<bool>,
+    dirichlet_z: &Array2<f64>,
+) -> Array2<f64> {
     let (h, w) = poly_mask.dim();
     let mut result = Array2::<f64>::from_elem((h, w), f64::NAN);
 
@@ -142,5 +164,115 @@ pub fn solve_laplace_dirichlet(
         result[(r, c)] = z[idx];
     }
     result
+}
+
+/// 统计内部变量数（poly & ~dirichlet），用于 GPU/CPU 分派判定。
+#[cfg(feature = "gpu")]
+fn count_interior_vars(poly_mask: &Array2<bool>, dirichlet_mask: &Array2<bool>) -> usize {
+    let (h, w) = poly_mask.dim();
+    let mut n = 0usize;
+    for r in 0..h {
+        for c in 0..w {
+            if poly_mask[(r, c)] && !dirichlet_mask[(r, c)] {
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
+/// GPU PCG 分派阈值：内部变量数 ≥ 此值才走 GPU（依 profile 交叉点 ~250k，见 docs/CUDA.md 路径 B）。
+/// 取略保守的 200k，确保只在 GPU 确有优势的大水域启用。
+#[cfg(feature = "gpu")]
+pub const GPU_PCG_MIN_VARS: usize = 200_000;
+
+/// 由 `(poly_mask, dirichlet_mask, dirichlet_z)` 构建 GPU matrix-free PCG 所需的全网格
+/// `deg`（度/对角场，非内部像素置 0）与 `b`（RHS，Dirichlet 邻居定值并入）。
+///
+/// 与 [`solve_laplace_dirichlet`] 的 CPU 装配**同一算子**：
+/// `deg = n_nb`（poly 邻居数，内部+Dirichlet）；`b = Σ dirichlet_z(Dirichlet 邻居)`。
+#[cfg(feature = "gpu")]
+fn build_pcg_fields(
+    poly_mask: &Array2<bool>,
+    dirichlet_mask: &Array2<bool>,
+    dirichlet_z: &Array2<f64>,
+) -> (Vec<f64>, Vec<f64>) {
+    let (h, w) = poly_mask.dim();
+    let mut deg = vec![0.0f64; h * w];
+    let mut b = vec![0.0f64; h * w];
+    for r in 0..h {
+        for c in 0..w {
+            if !(poly_mask[(r, c)] && !dirichlet_mask[(r, c)]) {
+                continue; // 仅内部像素为变量
+            }
+            let mut n_nb = 0.0f64;
+            let mut bb = 0.0f64;
+            for (dr, dc) in OFFSETS {
+                let nr = r as i64 + dr;
+                let nc = c as i64 + dc;
+                if nr < 0 || nr >= h as i64 || nc < 0 || nc >= w as i64 {
+                    continue;
+                }
+                let (nr, nc) = (nr as usize, nc as usize);
+                if poly_mask[(nr, nc)] && !dirichlet_mask[(nr, nc)] {
+                    n_nb += 1.0; // 内部邻居
+                } else if dirichlet_mask[(nr, nc)] {
+                    n_nb += 1.0; // Dirichlet 邻居
+                    bb += dirichlet_z[(nr, nc)];
+                }
+            }
+            deg[r * w + c] = n_nb;
+            b[r * w + c] = bb;
+        }
+    }
+    (deg, b)
+}
+
+/// 用 GPU matrix-free FP64 Jacobi-PCG 求解 ∇²z=0 Dirichlet 系统（与 [`solve_laplace_dirichlet`] 等价）。
+///
+/// 返回 `Some(result)` 当且仅当 GPU 求解成功且**收敛到目标残差**；否则 `None`（由调用方回退 faer）。
+/// 这保证只在数值可靠时采用 GPU 解，兼顾稳定性与 parity（rtol 足够紧，vs faer < 1e-6）。
+#[cfg(feature = "gpu")]
+pub fn solve_laplace_dirichlet_gpu(
+    poly_mask: &Array2<bool>,
+    dirichlet_mask: &Array2<bool>,
+    dirichlet_z: &Array2<f64>,
+) -> Option<Array2<f64>> {
+    let (h, w) = poly_mask.dim();
+    let (deg, b) = build_pcg_fields(poly_mask, dirichlet_mask, dirichlet_z);
+
+    // rtol 紧到保证与 faer parity < 1e-6（profile：rtol=1e-10 已达 ~6e-7，这里更紧一档）；
+    // max_iter 依域尺寸放宽，正常远不触及（Jacobi-PCG 迭代数 ~ O(边长)）。
+    let rtol = 1e-11;
+    let max_iter = (10 * h.max(w) + 2000) as i32;
+    let res = water_gpu::laplace_pcg(&deg, &b, h, w, rtol, max_iter).ok()?;
+    if !res.residual.is_finite() || res.residual > rtol {
+        // 未收敛：回退 CPU faer 以保稳定与精度。
+        tracing::warn!(
+            "Laplace GPU PCG 未收敛（iters={}, res={:.2e} > rtol={:.0e}），回退 faer",
+            res.iters,
+            res.residual,
+            rtol
+        );
+        return None;
+    }
+    tracing::debug!(
+        "Laplace GPU PCG 收敛：h={h} w={w} iters={} res={:.2e} solve={:.2}ms",
+        res.iters,
+        res.residual,
+        res.timing.kernel_ms
+    );
+
+    let mut result = Array2::<f64>::from_elem((h, w), f64::NAN);
+    for r in 0..h {
+        for c in 0..w {
+            if dirichlet_mask[(r, c)] {
+                result[(r, c)] = dirichlet_z[(r, c)];
+            } else if poly_mask[(r, c)] {
+                result[(r, c)] = res.z[r * w + c];
+            }
+        }
+    }
+    Some(result)
 }
 

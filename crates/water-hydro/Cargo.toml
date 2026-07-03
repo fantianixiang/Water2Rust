@@ -20,5 +20,13 @@ faer.workspace = true
 eci-gdal-core.workspace = true
 eci-gdal-proj.workspace = true
 
+# GPU 加速（可选）：大水域 Laplace 走 matrix-free FP64 PCG（水域达阈值时），小的用 faer。
+# 默认关闭：不启用则纯 CPU、构建期不需 CUDA 工具链。启用需本机 CUDA（nvcc + cudart）。
+water-gpu = { workspace = true, optional = true }
+
+[features]
+# 开启 GPU Laplace 分派（阈值以上用 GPU PCG，未收敛/失败回退 faer）。
+gpu = ["dep:water-gpu"]
+
 [dev-dependencies]
 serde_json.workspace = true

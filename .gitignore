@@ -19,9 +19,15 @@ Cargo.lock
 .DS_Store
 Thumbs.db
 
-# Python ����
+# Python ����
 __pycache__/
 *.pyc
 
 # Separate local repo, syncs to eci-gdal (not Water2Rust)
 eci-gdal-contrib/
+
+# GPU 改造评审清单（本地审批文档，不入库）
+/GPU改造清单.md
+
+# 第三方 GPU 库（cuDSS 等，本地安装，不入库）
+/third_party/

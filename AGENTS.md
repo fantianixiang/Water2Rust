@@ -8,10 +8,13 @@
 
 > 【Water2GPU / 分支 `GPU/Project`】本分支 **继承自 `rust/shadcn`**（完整纯 Rust 程序），在其上叠加
 > **CUDA + Rust GPU 加速层**，逐模块把 CPU 数值核搬到 GPU。**下文纯 Rust 规则仍全部适用**，
-> GPU 层只新增一条必要例外：计算核用 CUDA C++（`.cu`）经 `nvcc`→PTX、`cudarc` 加载（
-> `dynamic-loading`，构建期不需 CUDA 库）。GPU 实现的验证 = **与 CPU-Rust 路径数值对拍（容差 < 1e-6）**，
-> CPU 路径已与 Python 逐位对拍过，即 GPU 的 golden 基准。详见 [docs/CUDA.md](docs/CUDA.md)。
-> GPU 首要目标：hydro 的 Laplace 稀疏求解上 GPU（cuDSS，**务必带 fill-reducing 重排序**）。
+> GPU 层只新增一条必要例外：计算核用 CUDA C++（`.cu`，含主机端 `extern "C"` launcher）经 `nvcc` 编成静态库、
+> Rust 经 **FFI** 调用（NVIDIA `cuda-samples` 风格；构建期需 CUDA 工具链 nvcc+cudart）。
+> **CUDA 编程规范（强制）**：① 每个 `.cu` 配同名 `.cuh` 声明接口；② `CUDA_CHECK` 严格包裹每个 CUDA 调用 +
+> 核后 `CUDA_CHECK_KERNEL` + 分配前 `cuda_require_free_mem` 显存检查；③ `CudaTimer`（cudaEvent）分段计时
+> H2D/kernel/D2H（ms）；④ 对标 NVIDIA `helper_cuda.h`。详见 [docs/CUDA.md](docs/CUDA.md)「CUDA 编程规范」。
+> GPU 实现的验证 = **与 CPU-Rust 路径数值对拍（容差 < 1e-6）**，CPU 路径已与 Python 逐位对拍过，即 golden 基准。
+> GPU 首要目标：hydro 的 Laplace 稀疏求解上 GPU（cuDSS，**务必带 fill-reducing 重排序**；PoC 已验证 parity=机器精度）。
 > 注：本机为 **Linux/WSL**，杀进程用 `kill -TERM <pid>`（非下文 Windows `taskkill`）。
 
 将 `MyProject` 的 Python `waters` 模块（位于 `E:\Projects\MyProject\modules\waters`）改造为**纯 Rust** 实现，

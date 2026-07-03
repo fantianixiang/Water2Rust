@@ -4,10 +4,18 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-# GPU 桥接层：Rust 编排 → CUDA 计算核（.cu 经 nvcc→PTX，cudarc 运行时加载）。
-# 业务 crate（water-hydro 等）经此调度 GPU 核，与 CPU 实现做数值对拍。
+# GPU 桥接层：Rust 编排 → CUDA C++ 计算核（NVIDIA 风格 .cu + .cuh + FFI）。
+# 每个 .cu 含主机端 launcher，nvcc 编成静态库链接；业务 crate 经此调度 GPU 核，与 CPU 对拍。
 
 [dependencies]
-cudarc.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+
+# cuDSS GPU 直接稀疏求解（Tier 1 Laplace PoC）。默认关闭：无 cuDSS 环境也能构建 water-gpu；
+# 启用需本机装有 cuDSS（third_party/cudss 或 CUDSS_LIB_DIR 指定）。
+[features]
+cudss = []
+
+[dev-dependencies]
+# 对拍基准：cuDSS GPU 解 vs faer CPU 稀疏 Cholesky（与 hydro solve_spd_faer 同一实现）。
+faer.workspace = true
