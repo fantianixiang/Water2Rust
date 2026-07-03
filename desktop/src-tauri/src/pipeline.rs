@@ -14,7 +14,8 @@ use water_fclass::FclassOptions;
 use water_hydro::OutputMode;
 
 /// 单个 fclass 的 edge/depth 覆盖值（来自前端齿轮子窗口）。
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "../../src/lib/bindings/")]
 pub struct EdgeOverride {
     pub fclass: String,
     pub edge: f64,
@@ -22,8 +23,9 @@ pub struct EdgeOverride {
 }
 
 /// 一次运行的全部参数（前端 camelCase → serde rename）。
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/bindings/", rename_all = "camelCase")]
 pub struct PipelineParams {
     pub water_path: String,
     pub output_path: String,
@@ -37,7 +39,8 @@ pub struct PipelineParams {
 }
 
 /// 任务产物（task, 路径）。
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[ts(export, export_to = "../../src/lib/bindings/")]
 pub struct TaskOutput {
     pub task: String,
     pub path: String,

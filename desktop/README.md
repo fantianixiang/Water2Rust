@@ -71,11 +71,13 @@ cargo check -p water-desktop
 - [x] 脚手架：React 19 + Vite 6 + Tauri 2 + Tailwind 3.4 + shadcn 基座
 - [x] 状态/异步：Zustand 5 + TanStack Query v5；图标 lucide-react
 - [x] 前端 ↔ 后端链路自检（`greet` 命令）
-- [ ] water 业务页（fclass / edge / hydro）迁移到 React/shadcn
-- [ ] Tauri 命令封装 water-core/io/fclass/hydro/edge-depth
-- [ ] tauri-specta / ts-rs 类型安全绑定
-- [ ] react-hook-form + zod 表单校验、react-resizable-panels 布局、Monaco 编辑器
-- [ ] Storybook（可选）
+- [x] water 业务页（fclass / edge / hydro）迁移到 React/shadcn，UI 按 shadcn 风格美化
+- [x] Tauri 命令封装 water-fclass/hydro/edge-depth（`run_pipeline` + 事件回传进度/日志）
+- [x] ts-rs 类型安全绑定（Rust 结构体 → `src/lib/bindings/*.ts`，前端共享类型单一来源）
+- [x] react-hook-form + zod（edge 参数子窗口校验）、react-resizable-panels 布局、Monaco 日志编辑器
+- [ ] Storybook（可选）；tauri-specta（已用 ts-rs 满足类型绑定，可后续替换）
+
+> 重新生成 ts-rs 绑定：`cargo test -p water-desktop`（导出到 `desktop/src/lib/bindings/`）。
 
 > 注：Tauri 依赖树中 cookie 0.18.1 与 time 0.3.52+ 不兼容，`src-tauri/Cargo.toml`
 > 已将 time 约束为 `<0.3.52`（本仓库 gitignore 了 Cargo.lock）。

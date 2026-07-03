@@ -1,41 +1,17 @@
 // Tauri 后端命令、事件与原生对话框的类型化封装。
+// 共享数据类型由 Rust 结构体经 ts-rs 生成（见 ./bindings/），此处 re-export。
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 
-/** 某 fclass 的 edge/depth 调参规格（`*Max === null` 表示 ∞）。 */
-export interface EdgeGuidanceItem {
-  fclass: string;
-  edge: number;
-  depth: number;
-  edgeMin: number;
-  edgeMax: number | null;
-  depthMin: number;
-  depthMax: number | null;
-}
+import type { EdgeGuidanceItem } from "./bindings/EdgeGuidanceItem";
+import type { PipelineParams } from "./bindings/PipelineParams";
+import type { TaskOutput } from "./bindings/TaskOutput";
 
-export interface EdgeOverride {
-  fclass: string;
-  edge: number;
-  depth: number;
-}
-
-export interface PipelineParams {
-  waterPath: string;
-  outputPath: string;
-  demPath: string | null;
-  referencePath: string;
-  doFclass: boolean;
-  doEdge: boolean;
-  doHydro: boolean;
-  hydroWithDem: boolean;
-  edgeOverrides: EdgeOverride[];
-}
-
-export interface TaskOutput {
-  task: string;
-  path: string;
-}
+export type { EdgeGuidanceItem } from "./bindings/EdgeGuidanceItem";
+export type { EdgeOverride } from "./bindings/EdgeOverride";
+export type { PipelineParams } from "./bindings/PipelineParams";
+export type { TaskOutput } from "./bindings/TaskOutput";
 
 /** 取 8 个 fclass 的 edge/depth 默认值与推荐范围。 */
 export function getEdgeGuidance(): Promise<EdgeGuidanceItem[]> {

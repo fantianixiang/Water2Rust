@@ -6,10 +6,11 @@ use water_core::edge_depth::edge_depth_guidance;
 /// 单个 fclass 的 edge/depth 调参规格（默认值 + 推荐范围）。
 ///
 /// 范围上界可能为无穷（sea）；JSON 无法表示 Infinity，故用 `Option<f64>`（`null` = ∞）。
-#[derive(Serialize)]
+#[derive(Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/lib/bindings/", rename_all = "camelCase")]
 pub struct EdgeGuidanceItem {
-    pub fclass: &'static str,
+    pub fclass: String,
     pub edge: f64,
     pub depth: f64,
     pub edge_min: f64,
@@ -28,7 +29,7 @@ pub fn get_edge_guidance() -> Vec<EdgeGuidanceItem> {
     edge_depth_guidance()
         .into_iter()
         .map(|(fclass, g)| EdgeGuidanceItem {
-            fclass,
+            fclass: fclass.to_string(),
             edge: g.edge_expand,
             depth: g.depth,
             edge_min: g.edge_expand_range.0,
