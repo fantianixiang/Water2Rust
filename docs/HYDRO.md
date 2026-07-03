@@ -28,8 +28,14 @@
 - Rust：[crates/water-hydro/src/laplace.rs](../crates/water-hydro/src/laplace.rs) `solve_laplace_dirichlet`
 - 对应 Python：`hydro/hydro_laplace.py::solve_laplace_dirichlet`
 - 实现说明：Python 组装对称负定系统 `A z = rhs` 后用 `scipy.sparse.linalg.spsolve` 直接解；
-  Rust 改解等价 SPD 系统 `M z = b`（`M = -A`），用 `nalgebra-sparse` 的 `CscCholesky` 直接分解。
-  线性系统解唯一，故两者在数值容差内一致。
+  Rust 改解等价 SPD 系统 `M z = b`（`M = -A`），用 **faer** 的稀疏 Cholesky（`factorize_symbolic_cholesky`
+  + AMD fill-reducing 重排序 + `factorize_numeric_llt`）直接分解。线性系统解唯一，故两者在数值容差内一致。
+  > **关键（2026-07-03 修复）**：早期用 `nalgebra-sparse::CscCholesky`，其**无 fill-reducing 重排序**，
+  > 对 2D 网格 Laplacian 填充随水域面积呈 O(n³) 内存增长——大江大湖（数百万内部像素）会耗尽内存、
+  > 求解数十分钟不完（实测全量林芝数据 hydro 30min 未完、内存 3→4.7GB 猛涨）。改用 faer 的 AMD 重排序
+  > 后填充压到 ~O(N log N)，与 Python `spsolve`（SuperLU + COLAMD）同量级；同一水域端到端 hydro
+  > 由「不可完成」变为 **3.3 秒**（`data/linzhi_clip` 含 1711×977 大河 + 中/小水体）。数值经 `laplace_parity`
+  > 及 `stage6c_river_solve/pipeline_parity` 验证与原实现/ Python 逐位一致（<1e-6）。
 - 测试：[crates/water-hydro/tests/laplace_parity.rs](../crates/water-hydro/tests/laplace_parity.rs)（5 个构造用例）
 - **对拍证据（最大绝对误差 vs scipy spsolve）**：
 

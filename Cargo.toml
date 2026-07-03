@@ -65,6 +65,9 @@ rayon = "1.10"
 ndarray = "0.16"
 nalgebra = "0.33"
 nalgebra-sparse = "0.10"
+# faer：纯 Rust 稀疏 Cholesky（内置 AMD fill-reducing 重排序，对标 scipy spsolve/SuperLU）。
+# 用于 hydro Laplace 水面直接求解，替代 nalgebra-sparse 无重排序的 CscCholesky（大水域填充失控）。
+faer = "0.24"
 geo = "0.28"
 geo-types = "0.7.18"
 rstar = "0.12"
