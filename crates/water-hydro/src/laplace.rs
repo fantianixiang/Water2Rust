@@ -11,15 +11,65 @@
 //! - `rhs[idx] -= dirichlet_z[Dirichlet 邻居]`
 //!
 //! 该 `A` 为对称负定；本实现改解等价的 SPD 系统 `M z = b`（`M = -A`，`b = -rhs`），
-//! 用 `nalgebra-sparse` 的 Cholesky 直接分解求解。线性系统解唯一，故与 scipy `spsolve`
-//! 在数值容差内一致。
+//! 用 **faer** 的稀疏 Cholesky（内置 AMD fill-reducing 重排序）直接分解求解。
+//! 线性系统解唯一，故与 scipy `spsolve`（SuperLU + COLAMD 重排序）在数值容差内一致。
+//! 相比 `nalgebra-sparse` 无重排序的 Cholesky（2D 网格填充 O(n³) 内存、大水域算爆），
+//! AMD 重排序把填充压到 ~O(N log N)，是大水面能在合理时间/内存内求解的关键。
 
-use nalgebra::DVector;
-use nalgebra_sparse::factorization::CscCholesky;
-use nalgebra_sparse::{CooMatrix, CscMatrix};
+use faer::dyn_stack::{MemBuffer, MemStack};
+use faer::linalg::cholesky::llt::factor::LltRegularization;
+use faer::reborrow::*;
+use faer::sparse::linalg::cholesky::{
+    factorize_symbolic_cholesky, CholeskySymbolicParams, SymmetricOrdering,
+};
+use faer::sparse::{SparseColMat, Triplet};
+use faer::{Conj, Mat, Par, Side};
 use ndarray::Array2;
 
 const OFFSETS: [(i64, i64); 4] = [(-1, 0), (1, 0), (0, -1), (0, 1)];
+
+/// 求解 SPD 系统 `M z = b`（`M` 以下三角三元组给出），用 faer AMD 稀疏 Cholesky。
+///
+/// `triplets` 含对角与**下三角**非对角项（每条无向边只存一次，row > col），
+/// AMD 重排序自动最小化填充。返回长度 `n` 的解向量。
+fn solve_spd_faer(n: usize, triplets: &[Triplet<usize, usize, f64>], b: &[f64]) -> Vec<f64> {
+    let a = SparseColMat::<usize, f64>::try_new_from_triplets(n, n, triplets)
+        .expect("组装 Dirichlet Laplacian 稀疏矩阵");
+    let symbolic = factorize_symbolic_cholesky(
+        a.symbolic(),
+        Side::Lower,
+        SymmetricOrdering::Amd,
+        CholeskySymbolicParams::default(),
+    )
+    .expect("Dirichlet Laplacian 符号分解");
+    let mut l_val = vec![0.0f64; symbolic.len_val()];
+    let llt = symbolic
+        .factorize_numeric_llt::<f64>(
+            &mut l_val,
+            a.rb(),
+            Side::Lower,
+            LltRegularization::default(),
+            Par::Seq,
+            MemStack::new(&mut MemBuffer::new(
+                symbolic.factorize_numeric_llt_scratch::<f64>(Par::Seq, Default::default()),
+            )),
+            Default::default(),
+        )
+        .expect("Dirichlet Laplacian 应为对称正定");
+    let mut x = Mat::<f64>::zeros(n, 1);
+    for (i, &bi) in b.iter().enumerate() {
+        x[(i, 0)] = bi;
+    }
+    llt.solve_in_place_with_conj(
+        Conj::No,
+        x.as_mut(),
+        Par::Seq,
+        MemStack::new(&mut MemBuffer::new(
+            symbolic.solve_in_place_scratch::<f64>(1, Par::Seq),
+        )),
+    );
+    (0..n).map(|i| x[(i, 0)]).collect()
+}
 
 /// 在 `poly_mask` 上求解 ∇²z = 0，`dirichlet_mask` 处施加 Dirichlet 边界（值取 `dirichlet_z`）。
 ///
@@ -57,9 +107,9 @@ pub fn solve_laplace_dirichlet(
         return result;
     }
 
-    // 组装 SPD 系统 M z = b（M = -A）
-    let mut coo = CooMatrix::<f64>::new(n_int, n_int);
-    let mut b = DVector::<f64>::zeros(n_int);
+    // 组装 SPD 系统 M z = b（M = -A）：对角 + 下三角非对角三元组，右端项 b。
+    let mut triplets: Vec<Triplet<usize, usize, f64>> = Vec::with_capacity(n_int * 3);
+    let mut b = vec![0.0f64; n_int];
 
     for (idx, &(r, c)) in int_rc.iter().enumerate() {
         let mut n_nb = 0.0f64;
@@ -71,8 +121,11 @@ pub fn solve_laplace_dirichlet(
             }
             let (nr, nc) = (nr as usize, nc as usize);
             if poly_mask[(nr, nc)] && !dirichlet_mask[(nr, nc)] {
-                // 内部邻居：M[idx, nb] = -1
-                coo.push(idx, var_idx[(nr, nc)] as usize, -1.0);
+                // 内部邻居：M[idx, nb] = -1，只存下三角（每条无向边一次）
+                let j = var_idx[(nr, nc)] as usize;
+                if j < idx {
+                    triplets.push(Triplet::new(idx, j, -1.0));
+                }
                 n_nb += 1.0;
             } else if dirichlet_mask[(nr, nc)] {
                 // Dirichlet 邻居：并入右端项
@@ -80,15 +133,14 @@ pub fn solve_laplace_dirichlet(
                 n_nb += 1.0;
             }
         }
-        coo.push(idx, idx, n_nb);
+        triplets.push(Triplet::new(idx, idx, n_nb));
     }
 
-    let csc = CscMatrix::from(&coo);
-    let chol = CscCholesky::factor(&csc).expect("Dirichlet Laplacian 应为对称正定");
-    let z = chol.solve(&b);
+    let z = solve_spd_faer(n_int, &triplets, &b);
 
     for (idx, &(r, c)) in int_rc.iter().enumerate() {
-        result[(r, c)] = z[(idx, 0)];
+        result[(r, c)] = z[idx];
     }
     result
 }
+

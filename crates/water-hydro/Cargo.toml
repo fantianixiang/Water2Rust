@@ -14,8 +14,7 @@ geo-types.workspace = true
 rstar.workspace = true
 rayon.workspace = true
 tracing.workspace = true
-nalgebra.workspace = true
-nalgebra-sparse.workspace = true
+faer.workspace = true
 
 # ── eci-gdal：CRS / 投影变换（工作 CRS 解析、局地 UTM 估计） ──
 eci-gdal-core.workspace = true
