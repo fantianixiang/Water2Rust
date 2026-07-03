@@ -11,6 +11,7 @@ use eci_gdal_core::RasterBounds;
 use geo::BoundingRect;
 use geo_types::{Geometry, Polygon};
 use ndarray::Array2;
+use rayon::prelude::*;
 
 use water_io::raster::{Dem, DemMeta};
 use water_io::vector::read_vector;
@@ -36,6 +37,8 @@ const OUTPUT_NODATA: f64 = -9999.0;
 const HYDRO_TILED_TILE_SIZE: u32 = 8192;
 /// 瓦片 padding（源像素）。Python `max(HYDRO_TILED_SURFACE_PADDING_PX, 64)`。
 const HYDRO_TILED_PAD_PX: u32 = 64;
+/// 瓦片级并行线程数（保持全分辨率，仅瓦片之间并行；faer 求解内部为 `Par::Seq`，不嵌套竞争）。
+const HYDRO_TILE_WORKERS: usize = 4;
 
 /// 从要素集合抽取多边形 + fclass（对应 Python `_extract_polygons` 展开顺序）。
 ///
@@ -321,11 +324,14 @@ fn run_hydro_pipeline_tiled(
 
     let (a, e, ox, oy) = (full_t[0], full_t[4], full_t[2], full_t[5]);
     let (tile, pad) = (HYDRO_TILED_TILE_SIZE, HYDRO_TILED_PAD_PX);
-    let (mut n_water, mut n_dry) = (0u32, 0u32);
     // 真实进度：按瓦片计数（含水+无水），供 UI 显示「第 N / 共 M」。
     let total_tiles = fw.div_ceil(tile) * fh.div_ceil(tile);
-    let mut tile_idx = 0u32;
 
+    // ── 一遍枚举瓦片：分含水/无水，收集含水瓦片作业（padded 窗口 + core 窗口）──
+    type Win = (u32, u32, u32, u32); // (col0, row0, w, h)
+    let mut jobs: Vec<(Win, Win)> = Vec::new();
+    let mut n_dry = 0u32;
+    let mut tile_idx = 0u32;
     let mut trow0 = 0u32;
     while trow0 < fh {
         let th = tile.min(fh - trow0);
@@ -344,31 +350,53 @@ fn run_hydro_pipeline_tiled(
             if !overlaps {
                 n_dry += 1;
                 tracing::info!("[hydro] 瓦片 {tile_idx}/{total_tiles} 跳过（区域内无水体）");
-                tcol0 += tile;
-                continue;
+            } else {
+                // padded 窗口（tile ± pad，clamp 到整幅）。
+                let pcol0 = tcol0.saturating_sub(pad);
+                let prow0 = trow0.saturating_sub(pad);
+                let pcol1 = (tcol0 + tw + pad).min(fw);
+                let prow1 = (trow0 + th + pad).min(fh);
+                jobs.push((
+                    (pcol0, prow0, pcol1 - pcol0, prow1 - prow0),
+                    (tcol0, trow0, tw, th),
+                ));
             }
-            tracing::info!("[hydro] 瓦片 {tile_idx}/{total_tiles} 处理含水区域…");
-
-            // padded 窗口（tile ± pad，clamp 到整幅）。
-            let pcol0 = tcol0.saturating_sub(pad);
-            let prow0 = trow0.saturating_sub(pad);
-            let pcol1 = (tcol0 + tw + pad).min(fw);
-            let prow1 = (trow0 + th + pad).min(fh);
-            let core = process_window(
-                dem, m, src_epsg, target_epsg, polys_target, fclass,
-                job.all_touched, job.output_mode,
-                (pcol0, prow0, pcol1 - pcol0, prow1 - prow0),
-                (tcol0, trow0, tw, th),
-            )?;
-            for r in 0..th as usize {
-                for c in 0..tw as usize {
-                    out[(trow0 as usize + r, tcol0 as usize + c)] = core[(r, c)];
-                }
-            }
-            n_water += 1;
             tcol0 += tile;
         }
         trow0 += tile;
+    }
+
+    // ── 含水瓦片 4 线程并行处理（全分辨率不变）──
+    let n_water = jobs.len() as u32;
+    tracing::info!(
+        "[hydro] 并行处理 {n_water} 个含水瓦片（{HYDRO_TILE_WORKERS} 线程，全分辨率）…"
+    );
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(HYDRO_TILE_WORKERS)
+        .build()
+        .map_err(|err| WaterError::Other(anyhow::anyhow!("rayon 线程池构建失败: {err}")))?;
+    let done = std::sync::atomic::AtomicU32::new(0);
+    let results: Vec<(Win, Array2<f32>)> = pool.install(|| {
+        jobs.par_iter()
+            .map(|&(pad_win, core_win)| {
+                let core = process_window(
+                    dem, m, src_epsg, target_epsg, polys_target, fclass,
+                    job.all_touched, job.output_mode, pad_win, core_win,
+                )?;
+                let k = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                tracing::info!("[hydro] 含水瓦片 {k}/{n_water} 完成");
+                Ok((core_win, core))
+            })
+            .collect::<Result<Vec<_>>>()
+    })?;
+
+    // ── 顺序写回全幅输出（各 core 区互不重叠，与串行逐位一致）──
+    for ((tcol0, trow0, tw, th), core) in results {
+        for r in 0..th as usize {
+            for c in 0..tw as usize {
+                out[(trow0 as usize + r, tcol0 as usize + c)] = core[(r, c)];
+            }
+        }
     }
     tracing::info!(
         "[hydro] 全部 {total_tiles} 个瓦片处理完成（含水 {n_water}，无水 {n_dry}），输出 {fh}×{fw}"
