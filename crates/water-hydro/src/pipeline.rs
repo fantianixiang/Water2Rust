@@ -257,6 +257,7 @@ pub fn run_hydro_pipeline(job: &HydroJob) -> Result<()> {
     }
 
     // 7) 单窗处理（pad == core == ROI）+ 写 ROI GeoTIFF。
+    tracing::info!("[hydro] 单窗口处理整个水域（{ww}×{hh} 源像素）…");
     let core = process_window(
         &dem, &m, src_epsg, target_epsg, &polys_target, &fclass,
         job.all_touched, job.output_mode,
@@ -264,6 +265,7 @@ pub fn run_hydro_pipeline(job: &HydroJob) -> Result<()> {
     )?;
     let is_geo = proj_from_epsg(src_epsg)?.is_latlong();
     write_geotiff_f32(&job.output_path, &core, roi_win_t, src_epsg, is_geo, Some(OUTPUT_NODATA))?;
+    tracing::info!("[hydro] 水面 DEM 写出完成 → {}", job.output_path.display());
     Ok(())
 }
 
@@ -320,6 +322,9 @@ fn run_hydro_pipeline_tiled(
     let (a, e, ox, oy) = (full_t[0], full_t[4], full_t[2], full_t[5]);
     let (tile, pad) = (HYDRO_TILED_TILE_SIZE, HYDRO_TILED_PAD_PX);
     let (mut n_water, mut n_dry) = (0u32, 0u32);
+    // 真实进度：按瓦片计数（含水+无水），供 UI 显示「第 N / 共 M」。
+    let total_tiles = fw.div_ceil(tile) * fh.div_ceil(tile);
+    let mut tile_idx = 0u32;
 
     let mut trow0 = 0u32;
     while trow0 < fh {
@@ -327,6 +332,7 @@ fn run_hydro_pipeline_tiled(
         let mut tcol0 = 0u32;
         while tcol0 < fw {
             let tw = tile.min(fw - tcol0);
+            tile_idx += 1;
             // 瓦片源 bbox（north-up：e<0）。
             let tminx = ox + tcol0 as f64 * a;
             let tmaxx = ox + (tcol0 + tw) as f64 * a;
@@ -337,9 +343,11 @@ fn run_hydro_pipeline_tiled(
                 .any(|b| b[0] <= tmaxx && b[2] >= tminx && b[1] <= tmaxy && b[3] >= tminy);
             if !overlaps {
                 n_dry += 1;
+                tracing::info!("[hydro] 瓦片 {tile_idx}/{total_tiles} 跳过（区域内无水体）");
                 tcol0 += tile;
                 continue;
             }
+            tracing::info!("[hydro] 瓦片 {tile_idx}/{total_tiles} 处理含水区域…");
 
             // padded 窗口（tile ± pad，clamp 到整幅）。
             let pcol0 = tcol0.saturating_sub(pad);
@@ -362,7 +370,9 @@ fn run_hydro_pipeline_tiled(
         }
         trow0 += tile;
     }
-    eprintln!("[hydro][tiled] water_tiles={n_water} dry_tiles={n_dry} out=({fh},{fw})");
+    tracing::info!(
+        "[hydro] 全部 {total_tiles} 个瓦片处理完成（含水 {n_water}，无水 {n_dry}），输出 {fh}×{fw}"
+    );
 
     let is_geo = proj_from_epsg(src_epsg)?.is_latlong();
     write_geotiff_f32(&job.output_path, &out, full_t, src_epsg, is_geo, Some(OUTPUT_NODATA))?;
