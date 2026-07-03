@@ -9,11 +9,13 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use geo::BoundingRect;
-use geo_types::{Geometry, LineString, Polygon, Rect};
+use geo_types::{Geometry, LineString, MultiPoint, Point, Polygon, Rect};
 use rstar::primitives::{GeomWithData, Rectangle};
 use rstar::RTree;
-use water_core::error::Result;
-use water_io::vector::{list_gpkg_layers, load_gpkg_layer, reproject_geometry};
+use water_core::error::{Result, WaterError};
+use water_io::vector::{
+    gpkg_layer_epsg, list_gpkg_layers, load_gpkg_layer_bbox, reproject_geometry,
+};
 
 /// 工作 CRS（与 Python `WORKING_CRS = EPSG:3857` 一致）。
 pub const WORKING_EPSG: u16 = 3857;
@@ -125,9 +127,35 @@ fn to_working(geom: &Geometry<f64>, src_epsg: u16) -> Result<Geometry<f64>> {
     reproject_geometry(geom, src_epsg, WORKING_EPSG)
 }
 
+/// 将工作 CRS 下的 AOI 包围盒变换到图层 native CRS 的包围盒（供 GeoPackage R-tree 下推）。
+///
+/// 同 CRS 直接返回；异 CRS 沿 AOI 边界密集采样后重投影取包围盒（防边缘曲率漏采），
+/// 并小幅外扩冗余——最终仍由工作 CRS 的 aoi 过滤保证正确。
+fn aoi_native_bbox(aoi: &Rect<f64>, native_epsg: u16) -> Result<[f64; 4]> {
+    if native_epsg == WORKING_EPSG {
+        return Ok([aoi.min().x, aoi.min().y, aoi.max().x, aoi.max().y]);
+    }
+    const N: usize = 16;
+    let (x0, y0, x1, y1) = (aoi.min().x, aoi.min().y, aoi.max().x, aoi.max().y);
+    let mut pts: Vec<Point<f64>> = Vec::with_capacity(N * 4 + 4);
+    for k in 0..=N {
+        let t = k as f64 / N as f64;
+        pts.push(Point::new(x0 + (x1 - x0) * t, y0));
+        pts.push(Point::new(x0 + (x1 - x0) * t, y1));
+        pts.push(Point::new(x0, y0 + (y1 - y0) * t));
+        pts.push(Point::new(x1, y0 + (y1 - y0) * t));
+    }
+    let r = reproject_geometry(&Geometry::MultiPoint(MultiPoint(pts)), WORKING_EPSG, native_epsg)?
+        .bounding_rect()
+        .ok_or_else(|| WaterError::Other(anyhow::anyhow!("AOI 重投影后无包围盒")))?;
+    let (dx, dy) = ((r.max().x - r.min().x) * 0.01, (r.max().y - r.min().y) * 0.01);
+    Ok([r.min().x - dx, r.min().y - dy, r.max().x + dx, r.max().y + dy])
+}
+
 /// 读取一个多边形族参照层：重投影 → 拆 `MultiPolygon` → aoi 过滤 → 建索引。
 fn load_polygon_layer(path: &Path, layer: &str, aoi: &Rect<f64>) -> Result<PolygonLayer> {
-    let (geoms, epsg) = load_gpkg_layer(path, layer)?;
+    let native_epsg = gpkg_layer_epsg(path, layer)?.unwrap_or(WORKING_EPSG);
+    let (geoms, epsg) = load_gpkg_layer_bbox(path, layer, aoi_native_bbox(aoi, native_epsg)?)?;
     let src = epsg.unwrap_or(WORKING_EPSG);
     let mut polys: Vec<Polygon<f64>> = Vec::new();
     for g in &geoms {
@@ -144,7 +172,8 @@ fn load_polygon_layer(path: &Path, layer: &str, aoi: &Rect<f64>) -> Result<Polyg
 
 /// 读取一个线族参照层：重投影 → 拆 `MultiLineString` → aoi 过滤 → 建索引。
 fn load_line_layer(path: &Path, layer: &str, aoi: &Rect<f64>) -> Result<LineLayer> {
-    let (geoms, epsg) = load_gpkg_layer(path, layer)?;
+    let native_epsg = gpkg_layer_epsg(path, layer)?.unwrap_or(WORKING_EPSG);
+    let (geoms, epsg) = load_gpkg_layer_bbox(path, layer, aoi_native_bbox(aoi, native_epsg)?)?;
     let src = epsg.unwrap_or(WORKING_EPSG);
     let mut lines: Vec<LineString<f64>> = Vec::new();
     for g in &geoms {

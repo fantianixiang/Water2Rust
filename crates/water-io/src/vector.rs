@@ -205,6 +205,24 @@ pub fn load_gpkg_layer(
     Ok((l.geometries, l.epsg))
 }
 
+/// 查询 GeoPackage 图层的 EPSG（仅读元数据，不读几何）。
+pub fn gpkg_layer_epsg(path: &Path, layer: &str) -> Result<Option<u16>> {
+    eci_gdal_vector::gpkg_layer_epsg(path, layer).map_err(WaterError::Other)
+}
+
+/// 读取 GeoPackage 图层中 native 坐标包围盒 `bbox=[minx,miny,maxx,maxy]` 内的几何 + EPSG。
+///
+/// 经 GeoPackage R-tree 空间索引下推过滤（对标 pyogrio `read(bbox=...)`），只取命中要素，
+/// 避免整层读取 + 全量重投影。
+pub fn load_gpkg_layer_bbox(
+    path: &Path,
+    layer: &str,
+    bbox: [f64; 4],
+) -> Result<(Vec<geo_types::Geometry<f64>>, Option<u16>)> {
+    let l = eci_gdal_vector::load_gpkg_layer_bbox(path, layer, bbox).map_err(WaterError::Other)?;
+    Ok((l.geometries, l.epsg))
+}
+
 // ── 几何重投影（经 eci-gdal-proj），供 fclass 统一到工作 CRS（EPSG:3857）──
 
 /// 将几何逐坐标从 `src_epsg` 重投影到 `dst_epsg`（经 eci-gdal-proj / proj4rs）。
