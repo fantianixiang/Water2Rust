@@ -125,6 +125,38 @@ profile（vs faer 直接解，rtol=1e-10）：
 - **结论**：**路径 B 可行**——GPU PCG 用于大水域（>~250k 内部像素），CPU faer 用于小的（阈值分派 + fallback）。
   优化空间：multigrid 预条件（→O(1) 迭代）、融合核、标量驻留设备（免每迭代 D2H）。
 
+## 真实地形三方对比（方法论 · 强制）
+
+> **每个 GPU 加速点都必须在真实地形数据上做 Python / Rust / GPU 三方对比并记录于本节**——
+> 合成基准（规则网格）常过于乐观，唯真实地形能给出可信的加速倍数与交叉点。
+
+- **数据**：`linzhi_clip`（真实 DEM + 已分类水体，`/home/fantianxiang/Water2GPU/linzhi_clip`）；全量林芝（若可用）。
+- **Python 环境**：conda `geoai_pack_py310`（scipy 1.15.2，原基线 `spsolve` = SuperLU+COLAMD）。
+- **方法**：诊断转储真实计算系统 → 三方在**同一真实系统**上端到端计时（装配 + 求解，best-of-3）。
+- **工具**：Rust 转储 `WATER_LAPLACE_DUMP_DIR=<dir>` + 跑真实 hydro；对比
+  [examples/bench_laplace_real.rs](../crates/water-hydro/examples/bench_laplace_real.rs)（faer + GPU PCG）、
+  [scripts/bench_laplace_real.py](../scripts/bench_laplace_real.py)（spsolve）。
+
+### Laplace 求解 —— 真实地形结果（2026-07-03）
+
+真实 hydro（linzhi_clip）导出的最大 Laplace 系统：**大河 1053×1581，n_int=75,356**（另有 13,057 / 432 更小）。
+端到端（装配 + 求解，best-of-3）：
+
+| 真实系统 | Python `spsolve`（e2e / 纯解） | Rust faer | GPU PCG |
+| --- | --- | --- | --- |
+| n=75,356（大河） | 207 / 76 ms | **43 ms** ⚡ | 230 ms |
+
+- **该 clip 上 GPU 反而最慢**：最大真实水体仅 7.5 万未知数，**远低于交叉点**，CPU faer 最快。
+- **真实河道为细长域**，CG 收敛慢于紧凑网格（230ms@75k 真实 vs ~140ms@75k 合成外推）→ **真实交叉点高于合成的 25 万**。
+- GPU 的收益需**全量林芝**（百万级未知数的大江大河；见上「路径 B」合成扫描：1M 时 vs faer 2.84×、
+  vs Python `spsolve` 8236ms→约 **17.6×**）。本机暂无全量 DEM，待补测。
+- **阈值分派**（≥20 万走 GPU）在本 clip **正确地全部走 CPU faer**，无 GPU 拖慢。
+- **待办**：(a) 取全量林芝大河真实系统复测以定真实交叉点；(b) 上 multigrid 预条件降低细长域迭代数、
+  从而下移交叉点，让更多真实水体受益。
+
+> 合成规模扫描（vs Python spsolve，同 2D Poisson 矩阵）供参考：n=1M 时 spsolve 8236ms、faer 1401ms、
+> PCG 467ms → **GPU vs Python 17.6×、vs faer 3.0×**；交叉点（GPU 超 faer）约 25 万、（超 Python）约 10 万。
+
 ## GPU 加速路线（按优先级，均需与 CPU 对拍）
 
 > 修订（2026-07-03，依 profile 证据）：Tier 1 **cuDSS 直接解已证伪**（慢于 faer）；但**路径 B matrix-free PCG 有效**

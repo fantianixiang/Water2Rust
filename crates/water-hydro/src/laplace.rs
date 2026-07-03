@@ -28,6 +28,53 @@ use ndarray::Array2;
 
 const OFFSETS: [(i64, i64); 4] = [(-1, 0), (1, 0), (0, -1), (0, 1)];
 
+/// 诊断转储：若设了环境变量 `WATER_LAPLACE_DUMP_DIR`，把每个真实 Laplace 系统
+/// `(poly_mask, dirichlet_mask, dirichlet_z)` 以紧凑二进制写盘，供 Python/Rust/GPU
+/// 三方在**真实地形系统**上做加速对比（见 scripts/bench_laplace_real.py）。
+///
+/// 格式（小端）：`i64 h`, `i64 w`, `h*w u8 poly`, `h*w u8 dmask`, `h*w f64 dz`。
+/// 文件名 `sys_<序号>_n<内部变量数>.bin`。
+fn maybe_dump_laplace_system(
+    poly_mask: &Array2<bool>,
+    dirichlet_mask: &Array2<bool>,
+    dirichlet_z: &Array2<f64>,
+) {
+    let Ok(dir) = std::env::var("WATER_LAPLACE_DUMP_DIR") else {
+        return;
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static CTR: AtomicUsize = AtomicUsize::new(0);
+    let id = CTR.fetch_add(1, Ordering::Relaxed);
+    let (h, w) = poly_mask.dim();
+    let n_int = (0..h * w)
+        .filter(|&i| poly_mask[(i / w, i % w)] && !dirichlet_mask[(i / w, i % w)])
+        .count();
+    let mut buf: Vec<u8> = Vec::with_capacity(16 + h * w * 10);
+    buf.extend_from_slice(&(h as i64).to_le_bytes());
+    buf.extend_from_slice(&(w as i64).to_le_bytes());
+    for r in 0..h {
+        for c in 0..w {
+            buf.push(poly_mask[(r, c)] as u8);
+        }
+    }
+    for r in 0..h {
+        for c in 0..w {
+            buf.push(dirichlet_mask[(r, c)] as u8);
+        }
+    }
+    for r in 0..h {
+        for c in 0..w {
+            buf.extend_from_slice(&dirichlet_z[(r, c)].to_le_bytes());
+        }
+    }
+    let path = format!("{dir}/sys_{id:04}_n{n_int}.bin");
+    if let Err(e) = std::fs::write(&path, &buf) {
+        tracing::warn!("转储 Laplace 系统失败 {path}: {e}");
+    } else {
+        tracing::info!("转储真实 Laplace 系统 {path}（{h}x{w}, n_int={n_int}）");
+    }
+}
+
 /// 求解 SPD 系统 `M z = b`（`M` 以下三角三元组给出），用 faer AMD 稀疏 Cholesky。
 ///
 /// `triplets` 含对角与**下三角**非对角项（每条无向边只存一次，row > col），
@@ -79,6 +126,9 @@ pub fn solve_laplace_dirichlet(
     dirichlet_mask: &Array2<bool>,
     dirichlet_z: &Array2<f64>,
 ) -> Array2<f64> {
+    // 诊断：真实地形对比时按需转储真实 Laplace 系统。
+    maybe_dump_laplace_system(poly_mask, dirichlet_mask, dirichlet_z);
+
     // GPU 分派（feature `gpu`）：内部变量数达阈值时用 matrix-free FP64 PCG（GPU），
     // 未收敛/失败自动回退 CPU faer。阈值依 profile 交叉点（见 docs/CUDA.md 路径 B）。
     #[cfg(feature = "gpu")]

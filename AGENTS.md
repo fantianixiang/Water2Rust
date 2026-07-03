@@ -14,6 +14,8 @@
 > 核后 `CUDA_CHECK_KERNEL` + 分配前 `cuda_require_free_mem` 显存检查；③ `CudaTimer`（cudaEvent）分段计时
 > H2D/kernel/D2H（ms）；④ 对标 NVIDIA `helper_cuda.h`。详见 [docs/CUDA.md](docs/CUDA.md)「CUDA 编程规范」。
 > GPU 实现的验证 = **与 CPU-Rust 路径数值对拍（容差 < 1e-6）**，CPU 路径已与 Python 逐位对拍过，即 golden 基准。
+> **每个 GPU 加速点必须在真实地形数据上做 Python / Rust / GPU 三方对比并记录到 docs/CUDA.md**
+> （合成基准常过于乐观；真实地形才给出可信加速倍数与交叉点。工具见 docs/CUDA.md「真实地形三方对比」）。
 > GPU 首要目标：hydro 的 Laplace 稀疏求解上 GPU（cuDSS，**务必带 fill-reducing 重排序**；PoC 已验证 parity=机器精度）。
 > 注：本机为 **Linux/WSL**，杀进程用 `kill -TERM <pid>`（非下文 Windows `taskkill`）。
 
