@@ -11,6 +11,7 @@ path = "src/main.rs"
 [dependencies]
 water-core.workspace = true
 water-io.workspace = true
+water-gpu.workspace = true
 water-fclass.workspace = true
 water-hydro.workspace = true
 water-edge-depth.workspace = true

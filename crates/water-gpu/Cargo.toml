@@ -1,0 +1,13 @@
+[package]
+name = "water-gpu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# GPU 桥接层：Rust 编排 → CUDA 计算核（.cu 经 nvcc→PTX，cudarc 运行时加载）。
+# 业务 crate（water-hydro 等）经此调度 GPU 核，与 CPU 实现做数值对拍。
+
+[dependencies]
+cudarc.workspace = true
+thiserror.workspace = true
+tracing.workspace = true

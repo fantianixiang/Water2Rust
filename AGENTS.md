@@ -6,6 +6,14 @@
 
 # Water2Rust — 纯 Rust 水体处理工具链
 
+> 【Water2GPU / 分支 `GPU/Project`】本分支 **继承自 `rust/shadcn`**（完整纯 Rust 程序），在其上叠加
+> **CUDA + Rust GPU 加速层**，逐模块把 CPU 数值核搬到 GPU。**下文纯 Rust 规则仍全部适用**，
+> GPU 层只新增一条必要例外：计算核用 CUDA C++（`.cu`）经 `nvcc`→PTX、`cudarc` 加载（
+> `dynamic-loading`，构建期不需 CUDA 库）。GPU 实现的验证 = **与 CPU-Rust 路径数值对拍（容差 < 1e-6）**，
+> CPU 路径已与 Python 逐位对拍过，即 GPU 的 golden 基准。详见 [docs/CUDA.md](docs/CUDA.md)。
+> GPU 首要目标：hydro 的 Laplace 稀疏求解上 GPU（cuDSS，**务必带 fill-reducing 重排序**）。
+> 注：本机为 **Linux/WSL**，杀进程用 `kill -TERM <pid>`（非下文 Windows `taskkill`）。
+
 将 `MyProject` 的 Python `waters` 模块（位于 `E:\Projects\MyProject\modules\waters`）改造为**纯 Rust** 实现，
 以极致性能与稳定性为核心设计目标。本软件是 GIS 行业强相关软件，**必须**遵循 GIS 行业最佳实践、以第一性原理视角分析与实现。
 

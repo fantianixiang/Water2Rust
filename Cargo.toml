@@ -6,6 +6,7 @@ members = [
     "desktop/src-tauri",
     "crates/water-core",
     "crates/water-io",
+    "crates/water-gpu",
     "crates/water-fclass",
     "crates/water-hydro",
     "crates/water-edge-depth",
@@ -38,6 +39,7 @@ authors = ["fantianixiang"]
 # ── workspace 内部 crate ──
 water-core = { path = "crates/water-core" }
 water-io = { path = "crates/water-io" }
+water-gpu = { path = "crates/water-gpu" }
 water-fclass = { path = "crates/water-fclass" }
 water-hydro = { path = "crates/water-hydro" }
 water-edge-depth = { path = "crates/water-edge-depth" }
@@ -68,6 +70,7 @@ nalgebra = "0.33"
 nalgebra-sparse = "0.10"
 # faer：纯 Rust 稀疏 Cholesky（内置 AMD fill-reducing 重排序，对标 scipy spsolve/SuperLU）。
 # 用于 hydro Laplace 水面直接求解，替代 nalgebra-sparse 无重排序的 CscCholesky（大水域填充失控）。
+# 【Water2GPU】现为 GPU 版 Laplace 求解（cuDSS）的 CPU 对拍基准。
 faer = "0.24"
 geo = "0.28"
 geo-types = "0.7.18"
@@ -77,6 +80,11 @@ uuid = { version = "1", features = ["v4", "serde"] }
 tokio = { version = "1", features = ["full"] }
 axum = "0.7"
 tower-http = { version = "0.6", features = ["cors", "fs", "trace"] }
+
+# ── GPU 桥接（Rust 编排 → CUDA 计算核，Water2GPU 新增） ──
+# cudarc：纯 Rust CUDA 绑定，dynamic-loading 运行时加载 Driver API，
+# 加载 nvcc 编译的 PTX/cubin。`cuda-13030` 精确匹配本机 CUDA Toolkit 13.3 + Blackwell(sm_120)。
+cudarc = { version = "0.19", default-features = false, features = ["std", "driver", "nvrtc", "dynamic-loading", "cuda-13030"] }
 
 # ── GUI（纯 Rust 原生，直接链接业务 crate；eframe 重导出 egui） ──
 eframe = { version = "0.29", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }

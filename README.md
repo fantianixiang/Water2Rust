@@ -1,5 +1,11 @@
 # Water2Rust
 
+> 【Water2GPU / 分支 `GPU/Project`】本分支继承自 `rust/shadcn`，在完整纯 Rust 程序上叠加
+> **CUDA + Rust GPU 加速**（逐模块把 CPU 数值核搬到 GPU，Rust 编排 + CUDA C++ 计算核）。
+> 新增 GPU 桥接 crate [`water-gpu`](crates/water-gpu)；架构与路线见 [docs/CUDA.md](docs/CUDA.md)。
+> 已验证：`nvcc→PTX→cudarc→GPU` 全链路在 RTX 5070（sm_120 / CUDA 13.3）与 CPU 逐位一致。
+> 快速自检：`cargo test -p water-gpu --release -- --nocapture`。
+
 将 `MyProject` 的 Python `waters` 模块改造为**纯 Rust** 的水体处理工具链。
 **不依赖** `gdal` / `fiona` / `shapely` 等 Python 第三方库，GIS 底层能力统一经
 [`eci-gdal`](crates/eci-gdal)（纯 Rust GDAL，git submodule）引入。
