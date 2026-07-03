@@ -1,18 +1,26 @@
-import { Loader2 } from "lucide-react";
+import { CheckCircle2, ListChecks, Loader2 } from "lucide-react";
 
+import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { useWaterStore, type TaskStatus } from "@/store/water-store";
 
-function statusMeta(status: TaskStatus) {
+type BadgeVariant = "default" | "secondary" | "destructive" | "outline" | "muted";
+
+function statusMeta(status: TaskStatus): {
+  value: number;
+  text: string;
+  indicator: string;
+  badge: BadgeVariant;
+} {
   switch (status) {
     case "failed":
-      return { value: 100, text: "失败", indicator: "bg-destructive", cls: "text-destructive" };
+      return { value: 100, text: "失败", indicator: "bg-destructive", badge: "destructive" };
     case "done":
-      return { value: 100, text: "完成", indicator: "bg-primary", cls: "text-primary" };
+      return { value: 100, text: "完成", indicator: "bg-primary", badge: "default" };
     case "running":
-      return { value: 100, text: "运行中…", indicator: "bg-primary animate-pulse", cls: "text-primary" };
+      return { value: 100, text: "运行中", indicator: "bg-primary animate-pulse", badge: "default" };
     default:
-      return { value: 0, text: "等待中", indicator: "", cls: "text-muted-foreground" };
+      return { value: 0, text: "等待中", indicator: "", badge: "muted" };
   }
 }
 
@@ -23,14 +31,15 @@ export function WaterProgressPanel() {
   const outputs = useWaterStore((s) => s.outputs);
 
   return (
-    <div className="flex h-full flex-col gap-3 overflow-y-auto p-5">
+    <div className="flex h-full flex-col gap-4 overflow-y-auto p-5">
       <div className="flex items-center gap-2">
-        <h2 className="text-base font-semibold">任务进度</h2>
+        <ListChecks className="h-4 w-4 text-muted-foreground" />
+        <h2 className="text-sm font-semibold">任务进度</h2>
         {running && <Loader2 className="h-4 w-4 animate-spin text-primary" />}
       </div>
 
       {taskBars.length === 0 ? (
-        <p className="text-xs text-muted-foreground">
+        <p className="rounded-md border border-dashed p-3 text-xs text-muted-foreground">
           勾选任务并点击「运行」后，将按任务分别显示进度
         </p>
       ) : (
@@ -38,10 +47,10 @@ export function WaterProgressPanel() {
           {taskBars.map((b) => {
             const m = statusMeta(b.status);
             return (
-              <div key={b.key} className="space-y-1">
-                <div className="flex items-center justify-between text-sm">
-                  <span className="font-medium">{b.name}</span>
-                  <span className={`text-xs ${m.cls}`}>{m.text}</span>
+              <div key={b.key} className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium">{b.name}</span>
+                  <Badge variant={m.badge}>{m.text}</Badge>
                 </div>
                 <Progress value={m.value} indicatorClassName={m.indicator} />
               </div>
@@ -50,18 +59,23 @@ export function WaterProgressPanel() {
         </div>
       )}
 
-      <div className="mt-1">
+      <div>
         {outputs.length === 0 ? (
           <p className="text-xs text-muted-foreground">结果保存位置将显示在此处</p>
         ) : (
-          <div className="space-y-1">
-            <p className="text-sm font-medium">结果已保存：</p>
-            {outputs.map((o) => (
-              <div key={o.task} className="flex items-baseline gap-2">
-                <span className="text-sm font-semibold text-primary">[{o.task}]</span>
-                <span className="break-all font-mono text-xs">{o.path}</span>
-              </div>
-            ))}
+          <div className="rounded-md border bg-muted/30 p-3">
+            <div className="mb-2 flex items-center gap-2">
+              <CheckCircle2 className="h-4 w-4 text-primary" />
+              <span className="text-sm font-medium">结果已保存</span>
+            </div>
+            <div className="space-y-1.5">
+              {outputs.map((o) => (
+                <div key={o.task} className="flex items-baseline gap-2">
+                  <Badge variant="secondary">{o.task}</Badge>
+                  <span className="break-all font-mono text-xs">{o.path}</span>
+                </div>
+              ))}
+            </div>
           </div>
         )}
       </div>

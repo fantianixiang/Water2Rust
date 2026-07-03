@@ -1,8 +1,7 @@
-import { Play, Settings } from "lucide-react";
+import { ListTodo, Play, Settings, SlidersHorizontal } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Separator } from "@/components/ui/separator";
 import {
   pickFile,
   pickSave,
@@ -59,7 +58,10 @@ export function WaterParamsPanel() {
 
   return (
     <div className="flex h-full flex-col gap-4 overflow-y-auto p-5">
-      <h2 className="text-base font-semibold">参数设置</h2>
+      <div className="flex items-center gap-2">
+        <SlidersHorizontal className="h-4 w-4 text-muted-foreground" />
+        <h2 className="text-sm font-semibold">参数设置</h2>
+      </div>
 
       <PathRow
         label="水体输入数据"
@@ -90,61 +92,67 @@ export function WaterParamsPanel() {
         onBrowse={() => pickFile("GeoPackage", ["gpkg"])}
       />
 
-      <Separator />
-
-      <div>
-        <h2 className="text-base font-semibold">任务选项 / 功能</h2>
-        <p className="text-xs text-muted-foreground">
+      <div className="rounded-lg border bg-muted/30 p-4">
+        <div className="mb-1 flex items-center gap-2">
+          <ListTodo className="h-4 w-4 text-muted-foreground" />
+          <h2 className="text-sm font-semibold">任务选项 / 功能</h2>
+        </div>
+        <p className="mb-3 text-xs text-muted-foreground">
           fclass 是 edge / hydro 的前置条件，会自动注入
         </p>
-      </div>
 
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-        <label className="flex items-center gap-2 text-sm">
-          <Checkbox
-            checked={doFclass}
-            onCheckedChange={(v) => set({ doFclass: !!v })}
-          />
-          水域分类 (fclass)
-        </label>
-        <label className="flex items-center gap-2 text-sm">
-          <Checkbox
-            checked={doEdge}
-            onCheckedChange={(v) => set({ doEdge: !!v })}
-          />
-          边缘深度 (edge)
-        </label>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-7 w-7"
-          title="设置 edge 参数（每类别 edgeexpand/depth）"
-          onClick={() => set({ showEdgeSettings: true })}
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+          <label className="flex items-center gap-2 text-sm">
+            <Checkbox
+              checked={doFclass}
+              onCheckedChange={(v) => set({ doFclass: !!v })}
+            />
+            水域分类 (fclass)
+          </label>
+          <label className="flex items-center gap-2 text-sm">
+            <Checkbox
+              checked={doEdge}
+              onCheckedChange={(v) => set({ doEdge: !!v })}
+            />
+            边缘深度 (edge)
+          </label>
+          <Button
+            variant="outline"
+            size="icon"
+            className="h-7 w-7"
+            title="设置 edge 参数（每类别 edgeexpand/depth）"
+            onClick={() => set({ showEdgeSettings: true })}
+          >
+            <Settings />
+          </Button>
+          <label className="flex items-center gap-2 text-sm">
+            <Checkbox
+              checked={doHydro}
+              onCheckedChange={(v) => set({ doHydro: !!v })}
+            />
+            水文DEM (hydro)
+          </label>
+        </div>
+
+        <label
+          className={`mt-3 flex items-center gap-2 text-sm ${doHydro ? "" : "opacity-50"}`}
         >
-          <Settings />
-        </Button>
-        <label className="flex items-center gap-2 text-sm">
           <Checkbox
-            checked={doHydro}
-            onCheckedChange={(v) => set({ doHydro: !!v })}
+            checked={hydroWithDem}
+            disabled={!doHydro}
+            onCheckedChange={(v) => set({ hydroWithDem: !!v })}
           />
-          水文DEM (hydro)
+          hydro 输出含 DEM 底图回填
         </label>
       </div>
-
-      <label
-        className={`flex items-center gap-2 text-sm ${doHydro ? "" : "opacity-50"}`}
-      >
-        <Checkbox
-          checked={hydroWithDem}
-          disabled={!doHydro}
-          onCheckedChange={(v) => set({ hydroWithDem: !!v })}
-        />
-        hydro 输出含 DEM 底图回填
-      </label>
 
       <div className="pt-1">
-        <Button onClick={run} disabled={running} className="min-w-24">
+        <Button
+          onClick={run}
+          disabled={running}
+          size="lg"
+          className="w-full"
+        >
           <Play />
           {running ? "运行中…" : "运行"}
         </Button>
