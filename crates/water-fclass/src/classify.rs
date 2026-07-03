@@ -3,8 +3,9 @@
 //! 对应 Python `fclass/partition.py::_classify_single_geometry` 与
 //! `fclass/classify.py` 的 `_has_line_clip_match` / `_any_polygon_match`。
 
-use geo::{Area, BooleanOps, BoundingRect, Centroid, Contains, EuclideanLength};
+use geo::{Area, BooleanOps, BoundingRect, Centroid, Contains, EuclideanLength, Intersects};
 use geo_types::{MultiLineString, MultiPolygon, Point};
+use rayon::prelude::*;
 
 use crate::reference::{LineLayer, PolygonLayer, ReferenceLayers};
 
@@ -38,15 +39,16 @@ fn has_line_clip_match(water: &MultiPolygon<f64>, layer: &LineLayer) -> bool {
     let Some(bbox) = water.bounding_rect() else {
         return false;
     };
-    for idx in layer.candidates(&bbox) {
+    // 候选扫描内层并行（大水体候选上万，outer 41-way 无法拆分单个）。
+    layer.candidates(&bbox).into_par_iter().any(|idx| {
         let line = &layer.lines[idx];
-        let ml = MultiLineString(vec![line.clone()]);
-        let clipped = water.clip(&ml, false);
-        if clipped.euclidean_length() >= OSM_LINE_MIN_LENGTH_M {
-            return true;
+        // 便宜的相交预筛：剪掉 bbox 重叠但几何实不相交的候选，避免昂贵 clip。
+        if !water.intersects(line) {
+            return false;
         }
-    }
-    false
+        let ml = MultiLineString(vec![line.clone()]);
+        water.clip(&ml, false).euclidean_length() >= OSM_LINE_MIN_LENGTH_M
+    })
 }
 
 /// 是否有参照多边形满足质心命中或重叠占比 ≥ 阈值。
@@ -62,17 +64,18 @@ fn any_polygon_match(
     let Some(bbox) = water.bounding_rect() else {
         return false;
     };
-    for idx in layer.candidates(&bbox) {
+    layer.candidates(&bbox).into_par_iter().any(|idx| {
         let poly = &layer.polys[idx];
         if poly.contains(centroid) {
             return true;
         }
-        let inter = water.intersection(&MultiPolygon(vec![poly.clone()]));
-        if inter.unsigned_area() / area >= POLYGON_OVERLAP_THRESHOLD {
-            return true;
+        // 便宜的相交预筛：不相交则跳过昂贵的 intersection 面积计算。
+        if !water.intersects(poly) {
+            return false;
         }
-    }
-    false
+        let inter = water.intersection(&MultiPolygon(vec![poly.clone()]));
+        inter.unsigned_area() / area >= POLYGON_OVERLAP_THRESHOLD
+    })
 }
 
 /// 对单个水体多边形分类，返回 `(fclass, reason)`。

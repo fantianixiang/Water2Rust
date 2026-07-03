@@ -92,12 +92,12 @@ pub fn run_fclass(water_path: &Path, output_path: &Path, opts: &FclassOptions) -
         .ok_or_else(|| WaterError::InvalidInput("水体几何无有效包围盒".into()))?;
     let refs = ReferenceLayers::load(&opts.reference_path, &aoi)?;
 
-    // 逐要素分类。
-    let mut fclasses: Vec<&'static str> = Vec::with_capacity(work_polys.len());
-    for wp in &work_polys {
-        let (fclass, _reason) = classify_geometry(wp, &refs);
-        fclasses.push(fclass);
-    }
+    // 逐要素分类（各要素独立，rayon 并行）。
+    use rayon::prelude::*;
+    let fclasses: Vec<&'static str> = work_polys
+        .par_iter()
+        .map(|wp| classify_geometry(wp, &refs).0)
+        .collect();
 
     write_output(water_path, output_path, &fc, &out_polys, &fclasses)?;
 
