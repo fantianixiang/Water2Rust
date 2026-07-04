@@ -17,6 +17,9 @@
 #[cfg(feature = "cudss")]
 pub mod cudss;
 
+/// 聚合多重网格 V-cycle 预条件的 matrix-free PCG（真实细长河的加速关键：降迭代数）。
+pub mod mg;
+
 /// 每个计算模块的分段耗时（毫秒），与 CUDA `common.cuh` 的 `WaterKernelTiming` 内存对齐。
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -403,6 +406,108 @@ mod tests {
                 max_abs,
                 faer_ms / pcg_ms,
                 pcg_total
+            );
+        }
+    }
+
+    // ── 聚合多重网格（MG）预条件 PCG：紧凑系统构造 + 对拍 / 迭代数对比 ──
+
+    /// 由 m×m 网格 5 点 Poisson-Dirichlet 构建**紧凑**系统 (diag, nbr, b, rows, cols)。
+    /// 每格皆变量，diag=4，域外邻居记 -1（Dirichlet-0，已隐含于 b）。与 `build_grid_poisson` 同解。
+    fn build_grid_compact(m: usize) -> (Vec<f64>, Vec<i32>, Vec<f64>, Vec<i32>, Vec<i32>) {
+        let n = m * m;
+        let diag = vec![4.0f64; n];
+        let b: Vec<f64> = (0..n).map(|i| ((i * 7 + 3) % 13) as f64 - 6.0).collect();
+        let mut nbr = vec![-1i32; n * 4];
+        let mut rows = vec![0i32; n];
+        let mut cols = vec![0i32; n];
+        // 邻居顺序与 build_pcg_compact 的 OFFSETS 无关，仅需一致的 5 点结构。
+        for r in 0..m {
+            for c in 0..m {
+                let i = r * m + c;
+                rows[i] = r as i32;
+                cols[i] = c as i32;
+                if r > 0 {
+                    nbr[i * 4] = ((r - 1) * m + c) as i32;
+                }
+                if r + 1 < m {
+                    nbr[i * 4 + 1] = ((r + 1) * m + c) as i32;
+                }
+                if c > 0 {
+                    nbr[i * 4 + 2] = (r * m + c - 1) as i32;
+                }
+                if c + 1 < m {
+                    nbr[i * 4 + 3] = (r * m + c + 1) as i32;
+                }
+            }
+        }
+        (diag, nbr, b, rows, cols)
+    }
+
+    /// MG-PCG 数值对拍：收敛到紧容差后与 faer 直接解一致（<1e-6）。
+    #[test]
+    fn laplace_pcg_mg_matches_faer() {
+        let m = 64;
+        let n = m * m;
+        let (_deg, b, tri) = build_grid_poisson(m);
+        let cpu = solve_faer(n, &tri, &b);
+        let (diag, nbr, bc, rows, cols) = build_grid_compact(m);
+        let res = mg::laplace_pcg_mg(&diag, &nbr, &bc, &rows, &cols, 1e-12, 5_000, 2, 2, 40, 0.8)
+            .expect("MG-PCG 失败");
+        let max_abs = cpu
+            .iter()
+            .zip(&res.z)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f64, f64::max);
+        eprintln!(
+            "[MG-PCG parity] n={n} iters={} rel_res={:.2e} max_abs(vs faer)={max_abs:.3e} \
+             (H2D={:.3} solve={:.3} D2H={:.3} ms)",
+            res.iters, res.residual, res.timing.h2d_ms, res.timing.kernel_ms, res.timing.d2h_ms
+        );
+        assert!(max_abs < 1e-6, "MG-PCG 与 faer 不一致: max_abs={max_abs:.3e}");
+    }
+
+    /// MG-PCG vs Jacobi-PCG vs faer 迭代数/耗时对比（规模扫描）。默认忽略：
+    /// `cargo test -p water-gpu --release profile_mg_vs -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn profile_mg_vs_jacobi_scaling() {
+        // 预热。
+        let (d, nb, b, rw, cl) = build_grid_compact(16);
+        let _ = mg::laplace_pcg_mg(&d, &nb, &b, &rw, &cl, 1e-8, 1000, 2, 2, 40, 0.8).expect("warmup");
+
+        eprintln!(
+            "{:>9} {:>10} {:>9} {:>10} {:>9} {:>10} {:>9} {:>11}",
+            "n", "faer_ms", "jac_it", "jac_ms", "mg_it", "mg_ms", "mg_spd", "mg_maxabs"
+        );
+        for &m in &[64usize, 128, 256, 512, 720, 1000] {
+            let n = m * m;
+            let (deg, b, tri) = build_grid_poisson(m);
+            let (diag, nbr, bc, rows, cols) = build_grid_compact(m);
+
+            let t = Instant::now();
+            let cpu = solve_faer(n, &tri, &b);
+            let faer_ms = t.elapsed().as_secs_f64() * 1e3;
+
+            let jac = laplace_pcg(&deg, &b, m, m, 1e-10, 100_000).expect("Jacobi-PCG 失败");
+            let mgr = mg::laplace_pcg_mg(&diag, &nbr, &bc, &rows, &cols, 1e-10, 100_000, 2, 2, 40, 0.8)
+                .expect("MG-PCG 失败");
+            let max_abs = cpu
+                .iter()
+                .zip(&mgr.z)
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0f64, f64::max);
+
+            eprintln!(
+                "{:>9} {:>10.2} {:>9} {:>10.2} {:>9} {:>10.2} {:>8.2}x {:>11.3e}",
+                n,
+                faer_ms,
+                jac.iters,
+                jac.timing.kernel_ms,
+                mgr.iters,
+                mgr.timing.kernel_ms,
+                faer_ms / mgr.timing.kernel_ms,
+                max_abs
             );
         }
     }

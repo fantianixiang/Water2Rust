@@ -231,15 +231,16 @@ fn count_interior_vars(poly_mask: &Array2<bool>, dirichlet_mask: &Array2<bool>) 
     n
 }
 
-/// GPU PCG 分派阈值：内部变量数 ≥ 此值才走 GPU。
+/// GPU MG-PCG 分派阈值：内部变量数 ≥ 此值才走 GPU。
 ///
-/// **真实地形标定（保护性）**：全量林芝最大真实 Laplace 系统 n≈414k 时，紧凑 PCG（Jacobi）
-/// 与 faer **持平/略慢**（GPU kernel 368ms + 装配，vs faer 405ms；细长河需 ~1203 迭代）。
-/// 故阈值设在观测最大值之上（500k），使当前真实数据**全部走 CPU faer，不产生回退**；
-/// GPU 仅对更大水域启用（PCG 近线性 vs faer 超线性，规模越大越有利）。
-/// 决定性反超需 multigrid 预条件（降迭代数），见 docs/CUDA.md 待办。
+/// **真实地形标定**：聚合多重网格（MG）预条件把细长河迭代数降到网格无关的 ~30-60，
+/// GPU kernel 大幅提速，端到端在大水域反超 faer。全量林芝实测（e2e，含装配）：
+/// n=414k 时 MG ~140ms vs faer 406ms（**2.9×**）；n=112k 时 MG 154ms vs faer 161ms（略胜）；
+/// n=73k 时二者持平；n=50k 时 faer 更快（GPU 固定开销 + 主机建层次未摊薄）。
+/// 故阈值设为 150k（保护性留裕度）：更小系统走 CPU faer 无回退，大河走 GPU 得实质加速。
+/// MG 保真已验证（真实夹具 2e-11、578k 圆盘 vs faer 8.6e-9 < 1e-6）。见 docs/CUDA.md。
 #[cfg(feature = "gpu")]
-pub const GPU_PCG_MIN_VARS: usize = 500_000;
+pub const GPU_PCG_MIN_VARS: usize = 150_000;
 
 /// 由 `(poly_mask, dirichlet_mask, dirichlet_z)` 构建**紧凑变量** PCG 输入：
 /// 只对内部变量建索引，避免在稀疏细长水域的空 bounding box 上做无用功。
@@ -293,11 +294,12 @@ pub fn build_pcg_compact(
     (diag, nbr, b, int_rc)
 }
 
-/// 用 GPU **紧凑变量** matrix-free FP64 Jacobi-PCG 求解 ∇²z=0 Dirichlet 系统
-/// （与 [`solve_laplace_dirichlet`] 等价）。
+/// 用 GPU **聚合多重网格（MG）预条件**紧凑变量 matrix-free FP64 PCG 求解 ∇²z=0 Dirichlet
+/// 系统（与 [`solve_laplace_dirichlet`] 等价）。
 ///
-/// 返回 `Some(result)` 当且仅当 GPU 求解成功且**收敛到目标残差**；否则 `None`（由调用方回退 faer）。
-/// 只在数值可靠时采用 GPU 解，兼顾稳定性与 parity（rtol 足够紧，vs faer < 1e-6）。
+/// MG V-cycle 预条件把真实细长河的迭代数从 ~1200（Jacobi）降到 ~60（网格无关收敛），
+/// GPU kernel 因此 ~5× 提速，大水域端到端反超 faer。见 [cuda/laplace_mg.cu]。
+/// 返回 `Some(result)` 当且仅当 GPU 求解成功且**收敛到目标残差**；否则 `None`（回退 faer）。
 #[cfg(feature = "gpu")]
 pub fn solve_laplace_dirichlet_gpu(
     poly_mask: &Array2<bool>,
@@ -307,15 +309,20 @@ pub fn solve_laplace_dirichlet_gpu(
     let (h, w) = poly_mask.dim();
     let (diag, nbr, b, int_rc) = build_pcg_compact(poly_mask, dirichlet_mask, dirichlet_z);
     let n = int_rc.len();
+    let rows: Vec<i32> = int_rc.iter().map(|&(r, _)| r as i32).collect();
+    let cols: Vec<i32> = int_rc.iter().map(|&(_, c)| c as i32).collect();
 
-    // rtol 紧到保证与 faer parity < 1e-6；max_iter 依变量规模放宽（细长域迭代数偏多），
-    // 未收敛则回退 faer 保稳定。
-    let rtol = 1e-11;
-    let max_iter = (40 * (n as f64).sqrt() as usize + 5000) as i32;
-    let res = water_gpu::laplace_pcg_compact(&diag, &nbr, &b, rtol, max_iter).ok()?;
+    // rtol 收紧到 1e-13（MG 收敛快，多迭代几次即可），保证与 faer 解 parity < 1e-6
+    // （真实高程量级大，绝对误差需足够裕度）；未收敛则回退 faer 保稳定。
+    let rtol = 1e-13;
+    let max_iter = 5_000;
+    // V-cycle：前/后各 2 次阻尼 Jacobi 光滑，最粗层 40 次，omega=0.8。
+    let res =
+        water_gpu::mg::laplace_pcg_mg(&diag, &nbr, &b, &rows, &cols, rtol, max_iter, 2, 2, 40, 0.8)
+            .ok()?;
     if !res.residual.is_finite() || res.residual > rtol {
         tracing::warn!(
-            "Laplace GPU PCG(紧凑) 未收敛（n={n}, iters={}, res={:.2e} > rtol={:.0e}），回退 faer",
+            "Laplace GPU MG-PCG 未收敛（n={n}, iters={}, res={:.2e} > rtol={:.0e}），回退 faer",
             res.iters,
             res.residual,
             rtol
@@ -323,7 +330,7 @@ pub fn solve_laplace_dirichlet_gpu(
         return None;
     }
     tracing::debug!(
-        "Laplace GPU PCG(紧凑) 收敛：n={n} iters={} res={:.2e} solve={:.2}ms",
+        "Laplace GPU MG-PCG 收敛：n={n} iters={} res={:.2e} solve={:.2}ms",
         res.iters,
         res.residual,
         res.timing.kernel_ms

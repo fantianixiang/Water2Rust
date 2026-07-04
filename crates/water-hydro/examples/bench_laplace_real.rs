@@ -65,14 +65,36 @@ fn main() {
         use water_hydro::laplace::{build_pcg_compact, solve_laplace_dirichlet_gpu};
         // 内部分解：host 装配 vs GPU 求解（h2d/kernel/d2h + 迭代数）。
         let t = Instant::now();
-        let (diag, nbr, b, _int_rc) = build_pcg_compact(&poly, &dmask, &dz);
+        let (diag, nbr, b, int_rc) = build_pcg_compact(&poly, &dmask, &dz);
         let build_ms = t.elapsed().as_secs_f64() * 1e3;
         let _ = water_gpu::laplace_pcg_compact(&diag, &nbr, &b, 1e-11, 200_000); // warmup
         let r = water_gpu::laplace_pcg_compact(&diag, &nbr, &b, 1e-11, 200_000).expect("compact");
         println!(
-            "  [breakdown] host_build={build_ms:.1}ms iters={} rel_res={:.1e} \
+            "  [Jacobi-PCG] host_build={build_ms:.1}ms iters={} rel_res={:.1e} \
              H2D={:.1} kernel={:.1} D2H={:.1} ms",
             r.iters, r.residual, r.timing.h2d_ms, r.timing.kernel_ms, r.timing.d2h_ms
+        );
+
+        // 聚合多重网格（MG）预条件 PCG：真实细长河的关键加速（降迭代数）。
+        let rows: Vec<i32> = int_rc.iter().map(|&(r, _)| r as i32).collect();
+        let cols: Vec<i32> = int_rc.iter().map(|&(_, c)| c as i32).collect();
+        let t = Instant::now();
+        let mg = water_gpu::mg::laplace_pcg_mg(
+            &diag, &nbr, &b, &rows, &cols, 1e-11, 20_000, 2, 2, 40, 0.8,
+        )
+        .expect("MG-PCG");
+        let mg_total = t.elapsed().as_secs_f64() * 1e3;
+        // 与 Jacobi-PCG 解对拍（同系统，验证 MG 保真）。
+        let max_abs = r
+            .z
+            .iter()
+            .zip(&mg.z)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f64, f64::max);
+        println!(
+            "  [MG-PCG]     iters={} rel_res={:.1e} H2D={:.1} kernel={:.1} D2H={:.1} ms \
+             (build+solve+d2h≈{mg_total:.1}ms, max_abs vs Jacobi={max_abs:.2e})",
+            mg.iters, mg.residual, mg.timing.h2d_ms, mg.timing.kernel_ms, mg.timing.d2h_ms
         );
 
         let _ = solve_laplace_dirichlet_gpu(&poly, &dmask, &dz); // warmup

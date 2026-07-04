@@ -118,16 +118,16 @@ profile（vs faer 直接解，rtol=1e-10）：
 | 518,400 | 635 | 358 | **1.77x** | 6.0e-7 | 1224 |
 | 1,000,000 | 1307 | **460** | **2.84x** | 2.7e-7 | 1415 |
 
-- **交叉点 ≈ 250k 未知数**：≥250k GPU PCG 更快，1M 时 **2.84×**——正好覆盖 hydro 瓶颈（大江大河）。
-  ⚠️ **注意：此为紧凑方形网格的乐观上界**；真实细长河（填充率低、CG 迭代更多）达不到，见「真实地形三方对比」——
-  全量林芝大河 n=414k 上紧凑 PCG 与 faer 仅**持平**。
+- **交叉点 ≈ 250k 未知数（Jacobi-PCG）**：≥250k 更快，1M 时 2.84×。⚠️ 此为紧凑方形网格乐观上界，
+  真实细长河 Jacobi-PCG 迭代爆炸达不到——须上 **MG 预条件**方能在真实大河反超（见「真实地形三方对比」：
+  n=414k MG 端到端 2.9× 反超 faer）。
 - **parity**：max_abs vs faer < 6e-7（< 1e-6 判据内）；对米级水面高程为亚微米精度，远超物理需求（需更紧可降 rtol）。
 - iters ~ O(m)（Jacobi-PCG 预期）；FP64 在消费卡 5070（FP64=1/64 FP32）仍够快——PCG 内存带宽受限，非算力受限。
 - 测试：`laplace_pcg_matches_faer`（parity）、`profile_pcg_vs_faer_scaling`（`--ignored`，规模扫描）。
 - **结论**：**路径 B 可行但需真实地形校准**——合成扫描证明 matrix-free PCG 数值正确、规模趋势对；
-  但真实细长河须用**紧凑变量 PCG**（免空 bbox 无用功）且当前 Jacobi 预条件仅达 faer 持平。
-  分派阈值按真实数据设为 **500k（保护性）**，见「真实地形三方对比」。
-  优化空间：multigrid 预条件（→O(1) 迭代）、融合核、标量驻留设备（免每迭代 D2H）。
+  但真实细长河须用**紧凑变量 PCG**（免空 bbox 无用功）+ **聚合多重网格预条件**（降迭代数）方能反超。
+  分派阈值按真实数据设为 **150k**，见「真实地形三方对比」。
+  剩余优化空间：融合核、标量驻留设备（免每迭代 D2H）、smoothed aggregation（进一步降迭代）。
 
 ## 真实地形三方对比（方法论 · 强制）
 
@@ -147,10 +147,12 @@ profile（vs faer 直接解，rtol=1e-10）：
 **大河 2686×5771，n_int=413,968**（bbox 1550 万像素，**填充率仅 2.7%**——真实河道细长稀疏）。
 端到端（装配 + 求解，best-of-3）：
 
-| 真实系统 | Python `spsolve`（e2e / 纯解） | Rust faer | GPU PCG（网格→紧凑）|
-| --- | --- | --- | --- |
-| n=413,968（全量林芝大河） | 1431 / 611 ms | **399 ms** | 4708 ms 🔴 → **431 ms** |
-| n=75,356（clip 大河） | 207 / 76 ms | **43 ms** | 230 ms |
+| 真实系统 | Python `spsolve`（e2e/纯解） | Rust faer | GPU 网格 PCG | GPU 紧凑 Jacobi-PCG | GPU 紧凑 **MG-PCG** |
+| --- | --- | --- | --- | --- | --- |
+| n=413,968（全量林芝大河） | 1431 / 611 | 406 ms | 4708 🔴 | 431 ms（1203 迭代） | **~140 ms ⚡（60 迭代，2.9×）** |
+| n=112,243 | — | 161 ms | — | ~200 ms（259 迭代） | **154 ms（28 迭代）** |
+| n=73,785 | — | 88 ms | — | ~100 ms（223 迭代） | 93 ms（26 迭代，持平） |
+| n=50,364 | — | **26 ms** | — | 135 ms（530 迭代） | 44 ms（43 迭代） |
 
 **关键教训（真实地形 vs 合成）**：
 - **合成基准严重误导**：合成 1M 紧凑方形网格 PCG 快过 faer 2.84×（vs Python 17.6×），但真实大河**完全相反**。
@@ -160,23 +162,34 @@ profile（vs faer 直接解，rtol=1e-10）：
   只对 n 个变量存邻居下标数组、stencil 只遍历变量，不碰空 bbox。**4708ms → 431ms（11×）**。
 - **根因② 细长域收敛慢**：紧凑修复后 GPU kernel 368ms / **1203 迭代**（同规模紧凑方形网格仅 ~640 迭代），
   故 GPU e2e 431ms 仍**略慢于 faer 399ms**——细长真实河的 Jacobi-PCG 收敛慢是剩余瓶颈。
-- **诚实结论**：紧凑 PCG 把 GPU 从「12× 回退」救回到「与 faer 持平（略慢）」；**当前 Jacobi 预条件不足以在
-  真实林芝大河上反超 faer**。决定性反超需 **multigrid 预条件**（1203 迭代 → ~100，kernel 368→~30ms → 约 3–4× 反超）。
-- **阈值（保护）**：`GPU_PCG_MIN_VARS=500k` 设在观测最大真实系统（414k）**之上**，使当前真实数据全部走 CPU faer、
-  **零回退**；GPU 仅对更大水域启用（PCG 近线性 vs faer 超线性）。数值 parity 已验证（真实夹具 4.6e-9、578k 圆盘 3.8e-7 < 1e-6）。
-- **待办**：(a) **multigrid 预条件**是让 GPU 在真实河上真正反超的关键杠杆；(b) 更大流域数据复测定交叉点。
+- **突破：聚合多重网格（MG）预条件**（[cuda/laplace_mg.cu](../crates/water-gpu/cuda/laplace_mg.cu)）——用 2×2 聚合
+  逐层粗化建 Galerkin 层次（各层仍为加权紧凑 5 点算子），以对称 V-cycle（阻尼 Jacobi 光滑 + 粗网格校正）作
+  PCG 预条件。**低频误差经粗网格一举消除**，迭代数降到**网格无关**的 ~30-60（不再随规模爆炸）：
+  - 真实林芝大河 n=414k：**1203 迭代 → 60 迭代**，GPU kernel **370ms → 74ms（5×）**，端到端 **~140ms vs faer 406ms = 2.9×** ⚡。
+  - 合成方网扫描（MG vs Jacobi 迭代数）：n=4k→1M 时 MG 迭代恒 22-42（Jacobi 132→1415）；n=1M MG kernel 86ms vs faer 1332ms = **15.5×**。
+  - SPD 保证：Galerkin 粗算子 + 对称光滑 + R=P^T → 预条件 SPD → CG 有效、保真。聚合天然贴合拓扑，对细长河比节点几何粗化稳健。
+- **诚实结论**：紧凑变量（免空 bbox）+ MG 预条件（降迭代）**双管齐下**，GPU 在真实林芝大河上
+  **端到端 2.9× 反超 faer**——这才是 GPU Laplace 的真正价值兑现。
+- **阈值**：`GPU_PCG_MIN_VARS=150k`。实测 e2e 交叉点 ~80-110k（n=112k MG 已胜、73k 持平、50k faer 胜——
+  小系统 GPU 固定开销 + 主机建层次未摊薄）；设 150k 留保护裕度，小系统走 faer 无回退，大河走 MG 得实质加速。
+  数值 parity 已验证（真实 Python 夹具 2e-11、578k 圆盘 vs faer 8.6e-9 < 1e-6）。
+- **待办**：(a) 主机层次构建 ~54ms 可并行/缓存以降 e2e、下移交叉点；(b) smoothed aggregation 进一步降迭代；
+  (c) 融合核 + 标量驻留设备减少每迭代 D2H。
 
-> 合成规模扫描（紧凑方形网格，vs Python spsolve）供参考：n=1M 时 spsolve 8236ms、faer 1401ms、PCG 467ms
-> → GPU vs Python 17.6×、vs faer 3.0×。**注意：此为紧凑网格的乐观上界，真实细长河达不到**（见上）。
+> 合成规模扫描（紧凑方形网格）：MG-PCG n=1M kernel 86ms vs faer 1332ms = 15.5×、vs Jacobi-PCG 508ms = 5.9×。
+> **但真实细长河 e2e 受主机装配/建层次限制**（大河 ~140ms 中 GPU 仅 74ms），故实际 2.9×——仍是决定性反超。
 
 ## GPU 加速路线（按优先级，均需与 CPU 对拍）
 
-> 修订（2026-07-03，依 profile 证据）：Tier 1 **cuDSS 直接解已证伪**（慢于 faer）；但**路径 B matrix-free PCG 有效**
-> （≥250k 时快 1–2.8×）。故 Laplace GPU 化改走 **PCG**（大水域），小多边形保留 faer。
+> 修订（2026-07-04，依 profile + 真实地形证据）：Tier 1 **cuDSS 直接解已证伪**（慢于 faer）；
+> **Laplace GPU 化 = 紧凑变量 + 聚合多重网格（MG）预条件 matrix-free PCG**，真实林芝大河
+> 端到端 **2.9× 反超 faer**（见「真实地形三方对比」）。小水域（<150k）保留 faer。
 
-1. **Laplace 上 GPU —— 走 matrix-free FP64 PCG（非 cuDSS）**：profile 证实大 n 快 1–2.8×（见上）。
-   下一步：真实多边形矩阵验证 → 接入 `water-hydro::solve_laplace_dirichlet`（阈值分派 + CPU fallback）→ 优化预条件。
-   剩余：大 n profile + 阈值分派 + 接入 river_solve（保留 CPU fallback）。
+1. **Laplace 上 GPU —— 紧凑变量 + MG 预条件 matrix-free FP64 PCG（非 cuDSS）** ✅ **已完成**：
+   紧凑变量免空 bbox 无用功；聚合多重网格 V-cycle 预条件把细长河迭代数从 1203 降到网格无关的 ~60，
+   GPU kernel 5× 提速，真实大河 e2e 2.9× 反超 faer。已接入 `water-hydro::solve_laplace_dirichlet`
+   （阈值 150k 分派 + CPU faer fallback），parity < 1e-6 全验证。
+   剩余优化：主机建层次并行化/缓存、smoothed aggregation、融合核 + 标量驻留设备。
 2. **高——warp / reproject 逐像素核**：天然可并行。需复刻 GDAL 默认 0.125px 近似变换器
    （CPU 版已实现于 `water-io/warp_approx.rs`），GPU 版对拍之。
 3. **中——形态学 / 高斯 / 距离变换 / 骨架**：替代 scipy.ndimage / skimage，可用 NPP 或自研核，

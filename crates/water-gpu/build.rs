@@ -10,7 +10,11 @@ use std::path::PathBuf;
 use std::process::Command;
 
 /// 需要编译的计算模块 .cu 清单（新增核在此登记）。
-const CU_SOURCES: &[&str] = &["cuda/vector_add.cu", "cuda/laplace_pcg.cu"];
+const CU_SOURCES: &[&str] = &[
+    "cuda/vector_add.cu",
+    "cuda/laplace_pcg.cu",
+    "cuda/laplace_mg.cu",
+];
 
 fn main() {
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR 未设置"));
