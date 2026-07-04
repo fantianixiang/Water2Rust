@@ -177,12 +177,13 @@ __global__ void kw_dot_partial(const double *a, const double *b, double *part,
     part[blockIdx.x] = sd[0];
   }
 }
-// 主机侧点积（部分和拷回主机求和，确定性）。
+// 主机侧点积（部分和拷回主机求和，确定性）。异步于 stream + 同步取值。
 static double mg_dot(const double *da, const double *db, double *d_part,
-                     double *h_part, int n, int grid) {
-  kw_dot_partial<<<grid, MG_BLOCK>>>(da, db, d_part, n);
-  cudaMemcpy(h_part, d_part, (size_t)grid * sizeof(double),
-             cudaMemcpyDeviceToHost);
+                     double *h_part, int n, int grid, cudaStream_t stream) {
+  kw_dot_partial<<<grid, MG_BLOCK, 0, stream>>>(da, db, d_part, n);
+  cudaMemcpyAsync(h_part, d_part, (size_t)grid * sizeof(double),
+                  cudaMemcpyDeviceToHost, stream);
+  cudaStreamSynchronize(stream);
   double s = 0.0;
   for (int i = 0; i < grid; i++) {
     s += h_part[i];
@@ -205,51 +206,52 @@ struct MgLevel {
   float *tmp = nullptr;  // Jacobi ping-pong
 };
 
-// 阻尼 Jacobi 光滑 count 遍（ping-pong，结果留在 x）。
+// 阻尼 Jacobi 光滑 count 遍（ping-pong，结果留在 x）。全程异步于给定 stream（供图捕获）。
 static void mg_smooth(const MgLevel &L, const float *b, float *x, float omega,
-                      int count) {
+                      int count, cudaStream_t stream) {
   if (count <= 0) {
     return;
   }
   float *cur = x;
   float *other = L.tmp;
   for (int s = 0; s < count; s++) {
-    kw_jacobi<float><<<L.grid, MG_BLOCK>>>(L.diag, L.nbr, L.wgt, b, cur, other,
-                                           omega, L.n);
+    kw_jacobi<float><<<L.grid, MG_BLOCK, 0, stream>>>(L.diag, L.nbr, L.wgt, b,
+                                                      cur, other, omega, L.n);
     float *t = cur;
     cur = other;
     other = t;
   }
   if (cur != x) {
-    cudaMemcpy(x, cur, (size_t)L.n * sizeof(float), cudaMemcpyDeviceToDevice);
+    cudaMemcpyAsync(x, cur, (size_t)L.n * sizeof(float),
+                    cudaMemcpyDeviceToDevice, stream);
   }
 }
 
 // 一次 V-cycle（FP32）：从零初值求 x0 ≈ A_0^{-1} b0。b0（lv[0].b）需已填。
+// 全程异步于 stream——固定核序列、无数据依赖分支，可被 CUDA 图捕获后反复重放（消 launch 开销）。
 static void mg_vcycle(std::vector<MgLevel> &lv, int pre, int post, int coarse,
-                      float omega) {
+                      float omega, cudaStream_t stream) {
   const int L = (int)lv.size();
   // 下行：光滑 → 残差 → 限制
   for (int l = 0; l < L - 1; l++) {
-    cudaMemset(lv[l].x, 0, (size_t)lv[l].n * sizeof(float));
-    mg_smooth(lv[l], lv[l].b, lv[l].x, omega, pre);
-    kw_residual<float><<<lv[l].grid, MG_BLOCK>>>(lv[l].diag, lv[l].nbr,
-                                                 lv[l].wgt, lv[l].b, lv[l].x,
-                                                 lv[l].r, lv[l].n);
-    kw_restrict<float><<<lv[l + 1].grid, MG_BLOCK>>>(lv[l + 1].child, lv[l].r,
-                                                     lv[l + 1].b, lv[l + 1].n);
+    cudaMemsetAsync(lv[l].x, 0, (size_t)lv[l].n * sizeof(float), stream);
+    mg_smooth(lv[l], lv[l].b, lv[l].x, omega, pre, stream);
+    kw_residual<float><<<lv[l].grid, MG_BLOCK, 0, stream>>>(
+        lv[l].diag, lv[l].nbr, lv[l].wgt, lv[l].b, lv[l].x, lv[l].r, lv[l].n);
+    kw_restrict<float><<<lv[l + 1].grid, MG_BLOCK, 0, stream>>>(
+        lv[l + 1].child, lv[l].r, lv[l + 1].b, lv[l + 1].n);
   }
   // 最粗层：多遍 Jacobi 近似求解
   {
     const int l = L - 1;
-    cudaMemset(lv[l].x, 0, (size_t)lv[l].n * sizeof(float));
-    mg_smooth(lv[l], lv[l].b, lv[l].x, omega, coarse);
+    cudaMemsetAsync(lv[l].x, 0, (size_t)lv[l].n * sizeof(float), stream);
+    mg_smooth(lv[l], lv[l].b, lv[l].x, omega, coarse, stream);
   }
   // 上行：延拓校正 → 后光滑
   for (int l = L - 2; l >= 0; l--) {
-    kw_prolong_add<float><<<lv[l].grid, MG_BLOCK>>>(lv[l].agg, lv[l + 1].x,
-                                                    lv[l].x, lv[l].n);
-    mg_smooth(lv[l], lv[l].b, lv[l].x, omega, post);
+    kw_prolong_add<float><<<lv[l].grid, MG_BLOCK, 0, stream>>>(
+        lv[l].agg, lv[l + 1].x, lv[l].x, lv[l].n);
+    mg_smooth(lv[l], lv[l].b, lv[l].x, omega, post, stream);
   }
 }
 
@@ -352,43 +354,59 @@ extern "C" int water_laplace_pcg_mg(
   CUDA_CHECK(cudaMemset(d_z, 0, bytes0));
   const double h2d_ms = timer.stop_ms();
 
-  // ── 求解循环（混合精度：FP64 外层 CG + FP32 MG V-cycle 预条件）──
+  // 非默认 stream + V-cycle CUDA 图：V-cycle 是固定核序列（无数据依赖分支），捕获一次后
+  // 每次 PCG 迭代重放一次图，将 ~96 次微核启动压成 1 次图启动（消 launch-bound 开销）。
+  cudaStream_t stream;
+  CUDA_CHECK(cudaStreamCreate(&stream));
+  cudaGraph_t vgraph;
+  cudaGraphExec_t vexec;
+  CUDA_CHECK(cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal));
+  mg_vcycle(lv, mg_pre, mg_post, mg_coarse, omega, stream);
+  CUDA_CHECK(cudaStreamEndCapture(stream, &vgraph));
+  CUDA_CHECK(cudaGraphInstantiate(&vexec, vgraph, 0));
+
+  // ── 求解循环（混合精度：FP64 外层 CG + FP32 MG V-cycle 图重放预条件）──
   timer.start();
-  CUDA_CHECK(cudaMemcpy(d_r, d_b, bytes0, cudaMemcpyDeviceToDevice)); // r=b（z=0）
-  double bnorm = std::sqrt(mg_dot(d_b, d_b, d_partial, h_partial, n0, grid0));
+  // r=b（z=0）
+  CUDA_CHECK(cudaMemcpyAsync(d_r, d_b, bytes0, cudaMemcpyDeviceToDevice, stream));
+  double bnorm =
+      std::sqrt(mg_dot(d_b, d_b, d_partial, h_partial, n0, grid0, stream));
   if (bnorm == 0.0)
     bnorm = 1.0;
-  // zpc = M^{-1} r：r(FP64)→b0(FP32) → V-cycle → x0(FP32)→zpc(FP64)
-  k_d2f<<<grid0, MG_BLOCK>>>(d_r, lv[0].b, n0);
-  mg_vcycle(lv, mg_pre, mg_post, mg_coarse, omega);
-  k_f2d<<<grid0, MG_BLOCK>>>(lv[0].x, d_zpc, n0);
-  CUDA_CHECK(cudaMemcpy(d_p, d_zpc, bytes0, cudaMemcpyDeviceToDevice));
-  double rz = mg_dot(d_r, d_zpc, d_partial, h_partial, n0, grid0);
+  // zpc = M^{-1} r：r(FP64)→b0(FP32) → V-cycle 图 → x0(FP32)→zpc(FP64)
+  k_d2f<<<grid0, MG_BLOCK, 0, stream>>>(d_r, lv[0].b, n0);
+  cudaGraphLaunch(vexec, stream);
+  k_f2d<<<grid0, MG_BLOCK, 0, stream>>>(lv[0].x, d_zpc, n0);
+  CUDA_CHECK(
+      cudaMemcpyAsync(d_p, d_zpc, bytes0, cudaMemcpyDeviceToDevice, stream));
+  double rz = mg_dot(d_r, d_zpc, d_partial, h_partial, n0, grid0, stream);
 
   int iter = 0;
   double rel = 1.0;
   for (; iter < max_iter; iter++) {
     // Ap = A_0 p（FP64 单位权 SpMV）
-    k_spmv_unit<double><<<grid0, MG_BLOCK>>>(d_diag0, lv[0].nbr, d_p, d_Ap, n0);
-    double pAp = mg_dot(d_p, d_Ap, d_partial, h_partial, n0, grid0);
+    k_spmv_unit<double><<<grid0, MG_BLOCK, 0, stream>>>(d_diag0, lv[0].nbr, d_p,
+                                                        d_Ap, n0);
+    double pAp = mg_dot(d_p, d_Ap, d_partial, h_partial, n0, grid0, stream);
     if (pAp == 0.0)
       break;
     double alpha = rz / pAp;
-    kw_axpy<<<grid0, MG_BLOCK>>>(d_z, alpha, d_p, n0);
-    kw_axpy<<<grid0, MG_BLOCK>>>(d_r, -alpha, d_Ap, n0);
-    double rnorm = std::sqrt(mg_dot(d_r, d_r, d_partial, h_partial, n0, grid0));
+    kw_axpy<<<grid0, MG_BLOCK, 0, stream>>>(d_z, alpha, d_p, n0);
+    kw_axpy<<<grid0, MG_BLOCK, 0, stream>>>(d_r, -alpha, d_Ap, n0);
+    double rnorm =
+        std::sqrt(mg_dot(d_r, d_r, d_partial, h_partial, n0, grid0, stream));
     rel = rnorm / bnorm;
     if (rel < rtol) {
       iter++;
       break;
     }
-    // zpc = M^{-1} r（FP32 V-cycle）
-    k_d2f<<<grid0, MG_BLOCK>>>(d_r, lv[0].b, n0);
-    mg_vcycle(lv, mg_pre, mg_post, mg_coarse, omega);
-    k_f2d<<<grid0, MG_BLOCK>>>(lv[0].x, d_zpc, n0);
-    double rznew = mg_dot(d_r, d_zpc, d_partial, h_partial, n0, grid0);
+    // zpc = M^{-1} r（FP32 V-cycle 图重放）
+    k_d2f<<<grid0, MG_BLOCK, 0, stream>>>(d_r, lv[0].b, n0);
+    cudaGraphLaunch(vexec, stream);
+    k_f2d<<<grid0, MG_BLOCK, 0, stream>>>(lv[0].x, d_zpc, n0);
+    double rznew = mg_dot(d_r, d_zpc, d_partial, h_partial, n0, grid0, stream);
     double beta = rznew / rz;
-    kw_update_p<<<grid0, MG_BLOCK>>>(d_p, d_zpc, beta, n0);
+    kw_update_p<<<grid0, MG_BLOCK, 0, stream>>>(d_p, d_zpc, beta, n0);
     rz = rznew;
   }
   CUDA_CHECK_KERNEL("laplace_pcg_mg");
@@ -399,6 +417,9 @@ extern "C" int water_laplace_pcg_mg(
   CUDA_CHECK(cudaMemcpy(h_z, d_z, bytes0, cudaMemcpyDeviceToHost));
   const double d2h_ms = timer.stop_ms();
 
+  cudaGraphExecDestroy(vexec);
+  cudaGraphDestroy(vgraph);
+  cudaStreamDestroy(stream);
   std::free(h_partial);
   for (int l = 0; l < L; l++) {
     cudaFree(lv[l].diag);
