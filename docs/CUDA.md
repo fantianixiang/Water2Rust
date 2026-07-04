@@ -168,20 +168,18 @@ profile（vs faer 直接解，rtol=1e-10）：
   - 真实林芝大河 n=414k：**1203 迭代 → 60 迭代**，GPU kernel **370ms → 74ms（5×）**，端到端 **~140ms vs faer 406ms = 2.9×** ⚡。
   - 合成方网扫描（MG vs Jacobi 迭代数）：n=4k→1M 时 MG 迭代恒 22-42（Jacobi 132→1415）；n=1M MG kernel 86ms vs faer 1332ms = **15.5×**。
   - SPD 保证：Galerkin 粗算子 + 对称光滑 + R=P^T → 预条件 SPD → CG 有效、保真。聚合天然贴合拓扑，对细长河比节点几何粗化稳健。
-- **诚实结论**：紧凑变量（免空 bbox）+ MG 预条件（降迭代）**双管齐下**，GPU 在真实林芝大河上
-  **端到端 2.9× 反超 faer**——这才是 GPU Laplace 的真正价值兑现。
+- **诚实结论**：紧凑变量（免空 bbox）+ MG 预条件（降迭代）+ 混合精度 + CUDA 图 + 主机并行**多管齐下**，
+  GPU 在真实林芝大河上**端到端 3.2× 反超 faer**（123.6ms vs 400ms）——GPU Laplace 的真正价值兑现。
 - **阈值**：`GPU_PCG_MIN_VARS=150k`。实测 e2e 交叉点 ~80-110k（n=112k MG 已胜、73k 持平、50k faer 胜——
   小系统 GPU 固定开销 + 主机建层次未摊薄）；设 150k 留保护裕度，小系统走 faer 无回退，大河走 MG 得实质加速。
-  数值 parity 已验证（真实 Python 夹具 2e-11、578k 圆盘 vs faer 8.6e-9 < 1e-6）。
-- **优化①：主机并行化（rayon）** ✅——瓶颈已从 GPU 移到主机单线程装配/建层次。`build_pcg_compact`
-  改逐行并行扫描 + 前缀和编号 + 逐变量并行装配（i32 反查表）：装配 **64ms → 35ms**；层次构建的
-  聚合/Galerkin 改稠密块表 + 直接粗邻居槽累加（免 HashMap SipHash）。真实大河 e2e **260ms → 200ms（2.1× vs faer）**。
-- **待办（剩余杠杆，按性价比）**：
-  - **混合精度 FP32 V-cycle 预条件**：5070 FP32 = 64× FP64，预条件只需近似（外层 CG 保 FP64 → 最终精度不变、parity 不受损），
-    V-cycle 显存流量减半 → GPU kernel（当前 ~90ms/60 迭代）预计 ~1.7×。**下一步首选**。
-  - **减少设备分配**：launcher 每层多次 `cudaMalloc` → 合并大 slab + pinned 内存，削 H2D/分配开销。
-  - **融合核 + 标量驻留设备（CUDA graph）**：省每迭代 launch/点积 D2H 同步。
-  - smoothed aggregation / W-cycle：进一步降迭代（60→~35），当前边际收益较小。
+  数值 parity 已验证（真实 Python 夹具 2e-11、578k 圆盘 vs faer 8.5e-9 < 1e-6）。
+- **优化迭代链**（详见 [cuda-exam/迭代日志.md](../cuda-exam/迭代日志.md)，逐次含真实大河三方对比）：
+  - **V8 主机并行①**：`build_pcg_compact` rayon 逐行并行 + 前缀和编号 + i32 反查表；层次构建去 HashMap（稠密块表 + 直接粗邻居槽）。装配 64→35ms，e2e 260→200ms。
+  - **V9 混合精度**：V-cycle 核模板化为 FP32（外层 CG 保 FP64 → parity 不损）。kernel 82→72ms。**发现 kernel 为 launch-bound**（非带宽受限）。
+  - **V11 CUDA 图**：V-cycle 是固定核序列，捕获一次每迭代重放（~96 启动→1 图启动）。**kernel 72→28.6ms（2.5×）**，e2e 187→154ms。
+  - **V12 主机并行②**：结果写回改 calloc 起底 + rayon 逐行填。e2e 154→**123.6ms（3.2×）**。
+  - V10 合并 slab/pinned 分配：评估后降级（FP32 层次已使 H2D~7ms，非瓶颈）；V13 smoothed aggregation：暂缓（破坏 ≤4 度紧凑核统一性、净收益边际）。
+- **累计**：GPU kernel 368ms→28.6ms（12.9×），e2e 从「与 faer 持平」到 **3.2× 反超**。剩余最大主机项 = 层次构建 ~45ms（含串行聚合下标分配），为未来杠杆。
 
 > 合成规模扫描（紧凑方形网格）：MG-PCG n=1M kernel 86ms vs faer 1332ms = 15.5×、vs Jacobi-PCG 508ms = 5.9×。
 > **但真实细长河 e2e 受主机装配/建层次限制**（大河 ~140ms 中 GPU 仅 74ms），故实际 2.9×——仍是决定性反超。

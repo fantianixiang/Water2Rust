@@ -358,17 +358,23 @@ pub fn solve_laplace_dirichlet_gpu(
         res.timing.kernel_ms
     );
 
-    let mut result = Array2::<f64>::from_elem((h, w), f64::NAN);
-    for r in 0..h {
-        for c in 0..w {
-            if dirichlet_mask[(r, c)] {
-                result[(r, c)] = dirichlet_z[(r, c)];
-            }
+    // 结果写回：全网格 NaN/Dirichlet 逐行并行填（calloc 起底近乎免费，仅并行触页），
+    // 内部变量按变量序散写（n 次，量小）。避免 124MB NaN 串行 memset + 15.5M 串行扫描。
+    use rayon::prelude::*;
+    let mut flat = vec![0.0f64; h * w];
+    flat.par_chunks_mut(w).enumerate().for_each(|(r, row)| {
+        for (c, cell) in row.iter_mut().enumerate() {
+            *cell = if dirichlet_mask[(r, c)] {
+                dirichlet_z[(r, c)]
+            } else {
+                f64::NAN
+            };
         }
-    }
+    });
     for (i, &(r, c)) in int_rc.iter().enumerate() {
-        result[(r, c)] = res.z[i];
+        flat[r * w + c] = res.z[i];
     }
+    let result = Array2::from_shape_vec((h, w), flat).expect("flat 长度应为 h*w");
     Some(result)
 }
 
