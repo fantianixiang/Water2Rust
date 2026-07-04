@@ -20,18 +20,22 @@
 
 extern "C" {
 
-// 聚合多重网格 V-cycle 预条件的 matrix-free FP64 PCG 求解 `A_0 z = b`。
+// 聚合多重网格 V-cycle 预条件的 matrix-free PCG 求解 `A_0 z = b`（混合精度）。
+//
+// **混合精度**：层次算子 diag_all/wgt_all 为 FP32（V-cycle 预条件用，精度不影响最终解、只影响迭代数）；
+// `diag0_f64` 为第 0 层 FP64 对角（外层 CG 的 A_0 单位权 SpMV 用），长度 n_0；h_b/h_z 为 FP64、仅第 0 层。
 //
 // V-cycle 参数：`mg_pre`/`mg_post` 每层前/后阻尼 Jacobi 光滑次数（相等以保对称）、
 // `mg_coarse` 最粗层光滑次数、`mg_omega` 阻尼 Jacobi 因子（如 0.8）。
 // 迭代到 `||r||_2/||b||_2 < rtol` 或达 `max_iter`。返回 cudaError_t（0=成功）；
 // `out_iters`/`out_res` 写实际迭代/最终相对残差；`timing` 写 H2D/求解/D2H 分段耗时（ms）。
 int water_laplace_pcg_mg(int n_levels, const int *level_n,
-                         const double *diag_all, const int *nbr_all,
-                         const double *wgt_all, const int *agg_all,
-                         const int *child_all, const double *h_b, double *h_z,
-                         double rtol, int max_iter, int mg_pre, int mg_post,
-                         int mg_coarse, double mg_omega, int *out_iters,
-                         double *out_res, WaterKernelTiming *timing);
+                         const float *diag_all, const int *nbr_all,
+                         const float *wgt_all, const int *agg_all,
+                         const int *child_all, const double *diag0_f64,
+                         const double *h_b, double *h_z, double rtol,
+                         int max_iter, int mg_pre, int mg_post, int mg_coarse,
+                         double mg_omega, int *out_iters, double *out_res,
+                         WaterKernelTiming *timing);
 
 } // extern "C"

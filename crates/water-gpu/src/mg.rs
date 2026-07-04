@@ -10,16 +10,18 @@
 use crate::{GpuError, KernelTiming, PcgResult, Result};
 
 extern "C" {
-    /// CUDA 侧 `water_laplace_pcg_mg`（cuda/laplace_mg.cu）：MG 预条件 matrix-free FP64 PCG。
+    /// CUDA 侧 `water_laplace_pcg_mg`（cuda/laplace_mg.cu）：混合精度 MG 预条件 matrix-free PCG。
+    /// 层次算子为 FP32（V-cycle 用），`diag0_f64` 为第 0 层 FP64 对角（外层 CG A_0 用）。
     #[allow(clippy::too_many_arguments)]
     fn water_laplace_pcg_mg(
         n_levels: i32,
         level_n: *const i32,
-        diag_all: *const f64,
+        diag_all: *const f32,
         nbr_all: *const i32,
-        wgt_all: *const f64,
+        wgt_all: *const f32,
         agg_all: *const i32,
         child_all: *const i32,
+        diag0_f64: *const f64,
         h_b: *const f64,
         h_z: *mut f64,
         rtol: f64,
@@ -234,18 +236,20 @@ pub fn laplace_pcg_mg(
     }
 
     // 主机构建层次结构并展平（前缀和段偏移由 CUDA 侧据 level_n 计算）。
+    // 混合精度：层次算子 diag/wgt 展平为 FP32（V-cycle 用）；另存第 0 层 FP64 对角（外层 CG A_0 用）。
     let levels = build_hierarchy(diag, nbr, rows, cols);
     let l = levels.len();
     let level_n: Vec<i32> = levels.iter().map(|lv| lv.n as i32).collect();
-    let mut diag_all: Vec<f64> = Vec::new();
+    let diag0_f64: Vec<f64> = levels[0].diag.clone();
+    let mut diag_all: Vec<f32> = Vec::new();
     let mut nbr_all: Vec<i32> = Vec::new();
-    let mut wgt_all: Vec<f64> = Vec::new();
+    let mut wgt_all: Vec<f32> = Vec::new();
     let mut agg_all: Vec<i32> = Vec::new();
     let mut child_all: Vec<i32> = Vec::new();
     for (li, lv) in levels.iter().enumerate() {
-        diag_all.extend_from_slice(&lv.diag);
+        diag_all.extend(lv.diag.iter().map(|&d| d as f32));
         nbr_all.extend_from_slice(&lv.nbr);
-        wgt_all.extend_from_slice(&lv.wgt);
+        wgt_all.extend(lv.wgt.iter().map(|&w| w as f32));
         // agg 段（最粗层无 → 补零占位）。
         if li < l - 1 {
             agg_all.extend_from_slice(&lv.agg);
@@ -269,6 +273,7 @@ pub fn laplace_pcg_mg(
             wgt_all.as_ptr(),
             agg_all.as_ptr(),
             child_all.as_ptr(),
+            diag0_f64.as_ptr(),
             b.as_ptr(),
             z.as_mut_ptr(),
             rtol,
