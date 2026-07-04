@@ -231,57 +231,73 @@ fn count_interior_vars(poly_mask: &Array2<bool>, dirichlet_mask: &Array2<bool>) 
     n
 }
 
-/// GPU PCG 分派阈值：内部变量数 ≥ 此值才走 GPU（依 profile 交叉点 ~250k，见 docs/CUDA.md 路径 B）。
-/// 取略保守的 200k，确保只在 GPU 确有优势的大水域启用。
-#[cfg(feature = "gpu")]
-pub const GPU_PCG_MIN_VARS: usize = 200_000;
-
-/// 由 `(poly_mask, dirichlet_mask, dirichlet_z)` 构建 GPU matrix-free PCG 所需的全网格
-/// `deg`（度/对角场，非内部像素置 0）与 `b`（RHS，Dirichlet 邻居定值并入）。
+/// GPU PCG 分派阈值：内部变量数 ≥ 此值才走 GPU。
 ///
-/// 与 [`solve_laplace_dirichlet`] 的 CPU 装配**同一算子**：
-/// `deg = n_nb`（poly 邻居数，内部+Dirichlet）；`b = Σ dirichlet_z(Dirichlet 邻居)`。
+/// **真实地形标定（保护性）**：全量林芝最大真实 Laplace 系统 n≈414k 时，紧凑 PCG（Jacobi）
+/// 与 faer **持平/略慢**（GPU kernel 368ms + 装配，vs faer 405ms；细长河需 ~1203 迭代）。
+/// 故阈值设在观测最大值之上（500k），使当前真实数据**全部走 CPU faer，不产生回退**；
+/// GPU 仅对更大水域启用（PCG 近线性 vs faer 超线性，规模越大越有利）。
+/// 决定性反超需 multigrid 预条件（降迭代数），见 docs/CUDA.md 待办。
 #[cfg(feature = "gpu")]
-fn build_pcg_fields(
+pub const GPU_PCG_MIN_VARS: usize = 500_000;
+
+/// 由 `(poly_mask, dirichlet_mask, dirichlet_z)` 构建**紧凑变量** PCG 输入：
+/// 只对内部变量建索引，避免在稀疏细长水域的空 bounding box 上做无用功。
+///
+/// 返回 `(diag, nbr, b, int_rc)`：
+/// - `diag[i]` = 第 i 变量的对角（poly 邻居数，内部+Dirichlet）；
+/// - `nbr[i*4+k]` = 第 i 变量第 k 邻居的变量下标（非内部邻居 = -1）；
+/// - `b[i]` = Σ dirichlet_z(Dirichlet 邻居)；
+/// - `int_rc[i]` = 第 i 变量的像素坐标（写回用）。
+/// 与 [`solve_laplace_dirichlet`] 的 CPU 装配**同一算子**。
+#[cfg(feature = "gpu")]
+pub fn build_pcg_compact(
     poly_mask: &Array2<bool>,
     dirichlet_mask: &Array2<bool>,
     dirichlet_z: &Array2<f64>,
-) -> (Vec<f64>, Vec<f64>) {
+) -> (Vec<f64>, Vec<i32>, Vec<f64>, Vec<(usize, usize)>) {
     let (h, w) = poly_mask.dim();
-    let mut deg = vec![0.0f64; h * w];
-    let mut b = vec![0.0f64; h * w];
+    let mut var_idx = Array2::<i64>::from_elem((h, w), -1);
+    let mut int_rc: Vec<(usize, usize)> = Vec::new();
     for r in 0..h {
         for c in 0..w {
-            if !(poly_mask[(r, c)] && !dirichlet_mask[(r, c)]) {
-                continue; // 仅内部像素为变量
+            if poly_mask[(r, c)] && !dirichlet_mask[(r, c)] {
+                var_idx[(r, c)] = int_rc.len() as i64;
+                int_rc.push((r, c));
             }
-            let mut n_nb = 0.0f64;
-            let mut bb = 0.0f64;
-            for (dr, dc) in OFFSETS {
-                let nr = r as i64 + dr;
-                let nc = c as i64 + dc;
-                if nr < 0 || nr >= h as i64 || nc < 0 || nc >= w as i64 {
-                    continue;
-                }
-                let (nr, nc) = (nr as usize, nc as usize);
-                if poly_mask[(nr, nc)] && !dirichlet_mask[(nr, nc)] {
-                    n_nb += 1.0; // 内部邻居
-                } else if dirichlet_mask[(nr, nc)] {
-                    n_nb += 1.0; // Dirichlet 邻居
-                    bb += dirichlet_z[(nr, nc)];
-                }
-            }
-            deg[r * w + c] = n_nb;
-            b[r * w + c] = bb;
         }
     }
-    (deg, b)
+    let n = int_rc.len();
+    let mut diag = vec![0.0f64; n];
+    let mut b = vec![0.0f64; n];
+    let mut nbr = vec![-1i32; n * 4];
+    for (i, &(r, c)) in int_rc.iter().enumerate() {
+        let mut n_nb = 0.0f64;
+        for (k, (dr, dc)) in OFFSETS.iter().enumerate() {
+            let nr = r as i64 + dr;
+            let nc = c as i64 + dc;
+            if nr < 0 || nr >= h as i64 || nc < 0 || nc >= w as i64 {
+                continue; // 域外：nbr 保持 -1
+            }
+            let (nr, nc) = (nr as usize, nc as usize);
+            if poly_mask[(nr, nc)] && !dirichlet_mask[(nr, nc)] {
+                nbr[i * 4 + k] = var_idx[(nr, nc)] as i32; // 内部邻居
+                n_nb += 1.0;
+            } else if dirichlet_mask[(nr, nc)] {
+                b[i] += dirichlet_z[(nr, nc)]; // Dirichlet 邻居定值并入 b
+                n_nb += 1.0;
+            }
+        }
+        diag[i] = n_nb;
+    }
+    (diag, nbr, b, int_rc)
 }
 
-/// 用 GPU matrix-free FP64 Jacobi-PCG 求解 ∇²z=0 Dirichlet 系统（与 [`solve_laplace_dirichlet`] 等价）。
+/// 用 GPU **紧凑变量** matrix-free FP64 Jacobi-PCG 求解 ∇²z=0 Dirichlet 系统
+/// （与 [`solve_laplace_dirichlet`] 等价）。
 ///
 /// 返回 `Some(result)` 当且仅当 GPU 求解成功且**收敛到目标残差**；否则 `None`（由调用方回退 faer）。
-/// 这保证只在数值可靠时采用 GPU 解，兼顾稳定性与 parity（rtol 足够紧，vs faer < 1e-6）。
+/// 只在数值可靠时采用 GPU 解，兼顾稳定性与 parity（rtol 足够紧，vs faer < 1e-6）。
 #[cfg(feature = "gpu")]
 pub fn solve_laplace_dirichlet_gpu(
     poly_mask: &Array2<bool>,
@@ -289,17 +305,17 @@ pub fn solve_laplace_dirichlet_gpu(
     dirichlet_z: &Array2<f64>,
 ) -> Option<Array2<f64>> {
     let (h, w) = poly_mask.dim();
-    let (deg, b) = build_pcg_fields(poly_mask, dirichlet_mask, dirichlet_z);
+    let (diag, nbr, b, int_rc) = build_pcg_compact(poly_mask, dirichlet_mask, dirichlet_z);
+    let n = int_rc.len();
 
-    // rtol 紧到保证与 faer parity < 1e-6（profile：rtol=1e-10 已达 ~6e-7，这里更紧一档）；
-    // max_iter 依域尺寸放宽，正常远不触及（Jacobi-PCG 迭代数 ~ O(边长)）。
+    // rtol 紧到保证与 faer parity < 1e-6；max_iter 依变量规模放宽（细长域迭代数偏多），
+    // 未收敛则回退 faer 保稳定。
     let rtol = 1e-11;
-    let max_iter = (10 * h.max(w) + 2000) as i32;
-    let res = water_gpu::laplace_pcg(&deg, &b, h, w, rtol, max_iter).ok()?;
+    let max_iter = (40 * (n as f64).sqrt() as usize + 5000) as i32;
+    let res = water_gpu::laplace_pcg_compact(&diag, &nbr, &b, rtol, max_iter).ok()?;
     if !res.residual.is_finite() || res.residual > rtol {
-        // 未收敛：回退 CPU faer 以保稳定与精度。
         tracing::warn!(
-            "Laplace GPU PCG 未收敛（iters={}, res={:.2e} > rtol={:.0e}），回退 faer",
+            "Laplace GPU PCG(紧凑) 未收敛（n={n}, iters={}, res={:.2e} > rtol={:.0e}），回退 faer",
             res.iters,
             res.residual,
             rtol
@@ -307,7 +323,7 @@ pub fn solve_laplace_dirichlet_gpu(
         return None;
     }
     tracing::debug!(
-        "Laplace GPU PCG 收敛：h={h} w={w} iters={} res={:.2e} solve={:.2}ms",
+        "Laplace GPU PCG(紧凑) 收敛：n={n} iters={} res={:.2e} solve={:.2}ms",
         res.iters,
         res.residual,
         res.timing.kernel_ms
@@ -318,10 +334,11 @@ pub fn solve_laplace_dirichlet_gpu(
         for c in 0..w {
             if dirichlet_mask[(r, c)] {
                 result[(r, c)] = dirichlet_z[(r, c)];
-            } else if poly_mask[(r, c)] {
-                result[(r, c)] = res.z[r * w + c];
             }
         }
+    }
+    for (i, &(r, c)) in int_rc.iter().enumerate() {
+        result[(r, c)] = res.z[i];
     }
     Some(result)
 }

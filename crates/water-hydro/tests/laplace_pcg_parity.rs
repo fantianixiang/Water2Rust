@@ -83,8 +83,8 @@ fn pcg_matches_python_fixtures() {
 /// 大不规则域（圆盘）：GPU PCG（含分派）与 CPU faer 直接解一致，且收敛稳定。
 #[test]
 fn pcg_matches_faer_large_irregular() {
-    let (h, w) = (720usize, 720usize);
-    let (cx, cy, rad) = (360.0f64, 360.0f64, 340.0f64);
+    let (h, w) = (900usize, 900usize);
+    let (cx, cy, rad) = (450.0f64, 450.0f64, 430.0f64);
     let r2 = rad * rad;
 
     let mut poly = Array2::<bool>::from_elem((h, w), false);
@@ -117,7 +117,7 @@ fn pcg_matches_faer_large_irregular() {
         .filter(|&i| poly[(i / w, i % w)] && !dmask[(i / w, i % w)])
         .count();
     eprintln!("[PCG large] 圆盘域内部变量 n_int = {n_int}");
-    assert!(n_int > 200_000, "构造的内部变量应超过 GPU 阈值，实为 {n_int}");
+    assert!(n_int > 500_000, "构造的内部变量应超过 GPU 阈值，实为 {n_int}");
 
     // CPU faer 参考。
     let cpu = solve_laplace_dirichlet_cpu(&poly, &dmask, &dz);

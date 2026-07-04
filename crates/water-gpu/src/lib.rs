@@ -53,6 +53,21 @@ extern "C" {
         out_res: *mut f64,
         timing: *mut KernelTiming,
     ) -> i32;
+
+    /// CUDA 侧 `water_laplace_pcg_compact`：紧凑变量版（只算 n 个变量，适合稀疏细长水域）。
+    #[allow(clippy::too_many_arguments)]
+    fn water_laplace_pcg_compact(
+        h_diag: *const f64,
+        h_nbr: *const i32,
+        h_b: *const f64,
+        h_z: *mut f64,
+        n: i32,
+        rtol: f64,
+        max_iter: i32,
+        out_iters: *mut i32,
+        out_res: *mut f64,
+        timing: *mut KernelTiming,
+    ) -> i32;
 }
 
 /// PCG 求解结果：解向量 + 实际迭代数 + 最终相对残差 + 分段耗时。
@@ -154,6 +169,65 @@ pub fn laplace_pcg(
             z.as_mut_ptr(),
             height as i32,
             width as i32,
+            rtol,
+            max_iter,
+            &mut iters,
+            &mut residual,
+            &mut timing,
+        )
+    };
+    if code != 0 {
+        return Err(GpuError::Cuda(code));
+    }
+    Ok(PcgResult {
+        z,
+        iters,
+        residual,
+        timing,
+    })
+}
+
+/// 紧凑变量版无矩阵 FP64 Jacobi-PCG：只对 `n` 个内部变量计算（不碰空 bounding box），
+/// 适合真实细长/稀疏水域。见 [cuda/laplace_pcg.cu](../cuda/laplace_pcg.cu) `water_laplace_pcg_compact`。
+///
+/// - `diag`：长度 n，每个变量的对角（域内邻居数）；
+/// - `nbr`：长度 4n，`nbr[i*4+k]` = 第 i 变量第 k 邻居的变量下标（非内部邻居 = -1）；
+/// - `b`：长度 n，RHS。返回解 `z`（变量序）与迭代/残差/耗时。
+pub fn laplace_pcg_compact(
+    diag: &[f64],
+    nbr: &[i32],
+    b: &[f64],
+    rtol: f64,
+    max_iter: i32,
+) -> Result<PcgResult> {
+    let n = diag.len();
+    if b.len() != n || nbr.len() != n * 4 {
+        return Err(GpuError::InvalidInput(format!(
+            "diag/b 长度 n={n}，nbr 应为 4n={}，实为 b={}, nbr={}",
+            n * 4,
+            b.len(),
+            nbr.len()
+        )));
+    }
+    let mut z = vec![0.0f64; n];
+    let mut iters: i32 = 0;
+    let mut residual: f64 = 0.0;
+    let mut timing = KernelTiming::default();
+    if n == 0 {
+        return Ok(PcgResult {
+            z,
+            iters,
+            residual,
+            timing,
+        });
+    }
+    let code = unsafe {
+        water_laplace_pcg_compact(
+            diag.as_ptr(),
+            nbr.as_ptr(),
+            b.as_ptr(),
+            z.as_mut_ptr(),
+            n as i32,
             rtol,
             max_iter,
             &mut iters,

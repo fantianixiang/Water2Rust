@@ -42,6 +42,26 @@ __global__ void k_spmv(const double *deg, const double *z, double *out, int H,
   }
 }
 
+// ── 紧凑变量 5 点 SpMV（只遍历 n 个内部变量，不碰空 bbox）──
+// nbr[i*4+k] = 第 i 个变量的第 k 个邻居的变量下标，非内部邻居为 -1（其定值已并入 b）。
+// out[i] = diag[i]*z[i] - Σ_k (nbr>=0 ? z[nbr] : 0)。
+__global__ void k_spmv_compact(const double *diag, const int *nbr,
+                               const double *z, double *out, int n) {
+  int stride = blockDim.x * gridDim.x;
+  for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += stride) {
+    double s = diag[i] * z[i];
+    const int *nb = nbr + (long long)i * 4;
+#pragma unroll
+    for (int k = 0; k < 4; k++) {
+      int j = nb[k];
+      if (j >= 0) {
+        s -= z[j];
+      }
+    }
+    out[i] = s;
+  }
+}
+
 // ── Jacobi 预条件：out = (deg>0) ? r/deg : 0 ──
 __global__ void k_elemdiv(const double *r, const double *deg, double *out,
                           int n) {
@@ -195,6 +215,118 @@ extern "C" int water_laplace_pcg(const double *h_deg, const double *h_b,
 
   std::free(h_partial);
   cudaFree(d_deg);
+  cudaFree(d_b);
+  cudaFree(d_z);
+  cudaFree(d_r);
+  cudaFree(d_p);
+  cudaFree(d_Ap);
+  cudaFree(d_zpc);
+  cudaFree(d_partial);
+
+  if (out_iters)
+    *out_iters = iter;
+  if (out_res)
+    *out_res = rel;
+  if (timing) {
+    timing->h2d_ms = h2d_ms;
+    timing->kernel_ms = kernel_ms;
+    timing->d2h_ms = d2h_ms;
+  }
+  return cudaSuccess;
+}
+
+extern "C" int water_laplace_pcg_compact(const double *h_diag, const int *h_nbr,
+                                         const double *h_b, double *h_z, int n,
+                                         double rtol, int max_iter,
+                                         int *out_iters, double *out_res,
+                                         WaterKernelTiming *timing) {
+  if (timing) {
+    timing->h2d_ms = 0.0;
+    timing->kernel_ms = 0.0;
+    timing->d2h_ms = 0.0;
+  }
+  if (out_iters)
+    *out_iters = 0;
+  if (out_res)
+    *out_res = 0.0;
+  if (n <= 0)
+    return cudaSuccess;
+  const size_t bytes = (size_t)n * sizeof(double);
+  const int grid = pcg_grid(n);
+
+  // 显存：diag,b,z,r,p,Ap,zpc（7×n f64）+ nbr（4×n i32）+ partial。
+  CUDA_CHECK(cuda_require_free_mem(bytes * 7 + (size_t)n * 4 * sizeof(int) +
+                                   (size_t)grid * sizeof(double)));
+
+  double *d_diag, *d_b, *d_z, *d_r, *d_p, *d_Ap, *d_zpc, *d_partial;
+  int *d_nbr;
+  CUDA_CHECK(cudaMalloc((void **)&d_diag, bytes));
+  CUDA_CHECK(cudaMalloc((void **)&d_nbr, (size_t)n * 4 * sizeof(int)));
+  CUDA_CHECK(cudaMalloc((void **)&d_b, bytes));
+  CUDA_CHECK(cudaMalloc((void **)&d_z, bytes));
+  CUDA_CHECK(cudaMalloc((void **)&d_r, bytes));
+  CUDA_CHECK(cudaMalloc((void **)&d_p, bytes));
+  CUDA_CHECK(cudaMalloc((void **)&d_Ap, bytes));
+  CUDA_CHECK(cudaMalloc((void **)&d_zpc, bytes));
+  CUDA_CHECK(cudaMalloc((void **)&d_partial, (size_t)grid * sizeof(double)));
+  double *h_partial = (double *)std::malloc((size_t)grid * sizeof(double));
+  if (!h_partial)
+    return cudaErrorMemoryAllocation;
+
+  CudaTimer timer;
+
+  // ── H2D ──
+  timer.start();
+  CUDA_CHECK(cudaMemcpy(d_diag, h_diag, bytes, cudaMemcpyHostToDevice));
+  CUDA_CHECK(cudaMemcpy(d_nbr, h_nbr, (size_t)n * 4 * sizeof(int),
+                        cudaMemcpyHostToDevice));
+  CUDA_CHECK(cudaMemcpy(d_b, h_b, bytes, cudaMemcpyHostToDevice));
+  CUDA_CHECK(cudaMemset(d_z, 0, bytes));
+  const double h2d_ms = timer.stop_ms();
+
+  // ── 求解循环（Jacobi-PCG，紧凑 SpMV）──
+  timer.start();
+  CUDA_CHECK(cudaMemcpy(d_r, d_b, bytes, cudaMemcpyDeviceToDevice)); // r = b
+  double bnorm = std::sqrt(device_dot(d_b, d_b, d_partial, h_partial, n, grid));
+  if (bnorm == 0.0)
+    bnorm = 1.0;
+  k_elemdiv<<<grid, PCG_BLOCK>>>(d_r, d_diag, d_zpc, n); // zpc = Minv r
+  CUDA_CHECK(cudaMemcpy(d_p, d_zpc, bytes, cudaMemcpyDeviceToDevice));
+  double rz = device_dot(d_r, d_zpc, d_partial, h_partial, n, grid);
+
+  int iter = 0;
+  double rel = 1.0;
+  for (; iter < max_iter; iter++) {
+    k_spmv_compact<<<grid, PCG_BLOCK>>>(d_diag, d_nbr, d_p, d_Ap, n);
+    double pAp = device_dot(d_p, d_Ap, d_partial, h_partial, n, grid);
+    if (pAp == 0.0)
+      break;
+    double alpha = rz / pAp;
+    k_axpy<<<grid, PCG_BLOCK>>>(d_z, alpha, d_p, n);
+    k_axpy<<<grid, PCG_BLOCK>>>(d_r, -alpha, d_Ap, n);
+    double rnorm = std::sqrt(device_dot(d_r, d_r, d_partial, h_partial, n, grid));
+    rel = rnorm / bnorm;
+    if (rel < rtol) {
+      iter++;
+      break;
+    }
+    k_elemdiv<<<grid, PCG_BLOCK>>>(d_r, d_diag, d_zpc, n);
+    double rznew = device_dot(d_r, d_zpc, d_partial, h_partial, n, grid);
+    double beta = rznew / rz;
+    k_update_p<<<grid, PCG_BLOCK>>>(d_p, d_zpc, beta, n);
+    rz = rznew;
+  }
+  CUDA_CHECK_KERNEL("laplace_pcg_compact");
+  const double kernel_ms = timer.stop_ms();
+
+  // ── D2H ──
+  timer.start();
+  CUDA_CHECK(cudaMemcpy(h_z, d_z, bytes, cudaMemcpyDeviceToHost));
+  const double d2h_ms = timer.stop_ms();
+
+  std::free(h_partial);
+  cudaFree(d_diag);
+  cudaFree(d_nbr);
   cudaFree(d_b);
   cudaFree(d_z);
   cudaFree(d_r);

@@ -25,4 +25,17 @@ int water_laplace_pcg(const double *h_deg, const double *h_b, double *h_z,
                       int height, int width, double rtol, int max_iter,
                       int *out_iters, double *out_res, WaterKernelTiming *timing);
 
+// 无矩阵 Jacobi-PCG 的**紧凑变量**版：只对 n 个内部变量计算，不碰空 bounding box。
+// 适合真实细长/稀疏水域（bbox 填充率低）——工作量正比于变量数而非 bbox 像素数。
+//
+//   - `h_diag`：长度 n，每个变量的对角（域内邻居数）；
+//   - `h_nbr`：长度 4n，`h_nbr[i*4+k]` = 第 i 变量第 k 邻居的变量下标（非内部邻居 = -1）；
+//   - `h_b`：长度 n，RHS（Dirichlet 邻居定值并入）；
+//   - `h_z`：长度 n，输出解（初值 0）。
+// 语义、返回值、计时与 `water_laplace_pcg` 一致。
+int water_laplace_pcg_compact(const double *h_diag, const int *h_nbr,
+                              const double *h_b, double *h_z, int n, double rtol,
+                              int max_iter, int *out_iters, double *out_res,
+                              WaterKernelTiming *timing);
+
 } // extern "C"

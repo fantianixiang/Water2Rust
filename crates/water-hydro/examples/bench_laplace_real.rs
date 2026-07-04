@@ -62,7 +62,19 @@ fn main() {
 
     #[cfg(feature = "gpu")]
     {
-        use water_hydro::laplace::solve_laplace_dirichlet_gpu;
+        use water_hydro::laplace::{build_pcg_compact, solve_laplace_dirichlet_gpu};
+        // 内部分解：host 装配 vs GPU 求解（h2d/kernel/d2h + 迭代数）。
+        let t = Instant::now();
+        let (diag, nbr, b, _int_rc) = build_pcg_compact(&poly, &dmask, &dz);
+        let build_ms = t.elapsed().as_secs_f64() * 1e3;
+        let _ = water_gpu::laplace_pcg_compact(&diag, &nbr, &b, 1e-11, 200_000); // warmup
+        let r = water_gpu::laplace_pcg_compact(&diag, &nbr, &b, 1e-11, 200_000).expect("compact");
+        println!(
+            "  [breakdown] host_build={build_ms:.1}ms iters={} rel_res={:.1e} \
+             H2D={:.1} kernel={:.1} D2H={:.1} ms",
+            r.iters, r.residual, r.timing.h2d_ms, r.timing.kernel_ms, r.timing.d2h_ms
+        );
+
         let _ = solve_laplace_dirichlet_gpu(&poly, &dmask, &dz); // warmup
         let mut gpu_ms = f64::INFINITY;
         let mut converged = false;
