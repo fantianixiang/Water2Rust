@@ -7,8 +7,6 @@
 //! CG 有效、与 faer 保真。层次结构展平后交 [`crate::laplace_pcg_mg`] 上传运行。
 //! CUDA 侧见 [cuda/laplace_mg.cu](../cuda/laplace_mg.cu)。
 
-use std::collections::HashMap;
-
 use crate::{GpuError, KernelTiming, PcgResult, Result};
 
 extern "C" {
@@ -93,43 +91,66 @@ struct Coarsen {
 }
 
 /// 对 `fine` 做一次 2×2 聚合粗化，返回 Galerkin 粗层算子（加权紧凑 5 点）。
+/// 用稠密块索引表 + 直接粗邻居槽累加（粗图 ≤4 度），避免 HashMap（SipHash）开销。
 fn coarsen(fine: &Level) -> Coarsen {
     let nf = fine.n;
     // ① 2×2 聚合：块坐标 (row/2, col/2) → 粗变量下标（首见即分配）。
-    let mut block_idx: HashMap<(i32, i32), i32> = HashMap::new();
+    //    用稠密块表（粗 bbox = 细 bbox/4）代替 HashMap，O(1) 查表。
+    let max_br = fine.rows.iter().map(|&r| r / 2).max().unwrap_or(0);
+    let max_bc = fine.cols.iter().map(|&c| c / 2).max().unwrap_or(0);
+    let bw = (max_bc as usize) + 1;
+    let bh = (max_br as usize) + 1;
+    let mut block_map = vec![-1i32; bh * bw];
     let mut agg = vec![-1i32; nf];
     let mut crows: Vec<i32> = Vec::new();
     let mut ccols: Vec<i32> = Vec::new();
     for i in 0..nf {
         let br = fine.rows[i] / 2;
         let bc = fine.cols[i] / 2;
-        let idx = *block_idx.entry((br, bc)).or_insert_with(|| {
+        let key = br as usize * bw + bc as usize;
+        let mut idx = block_map[key];
+        if idx < 0 {
+            idx = crows.len() as i32;
+            block_map[key] = idx;
             crows.push(br);
             ccols.push(bc);
-            (crows.len() - 1) as i32
-        });
+        }
         agg[i] = idx;
     }
     let nc = crows.len();
 
-    // 子表 child[J*4+k]（← 细层），每粗变量至多 4 子。
+    // ② 子表 child[J*4+k]（← 细层）+ Galerkin 对角 diag_c[J] = Σ_{i∈J} diag[i]。
     let mut child = vec![-1i32; nc * 4];
-    let mut child_cnt = vec![0usize; nc];
-    for i in 0..nf {
-        let j = agg[i] as usize;
-        let slot = child_cnt[j];
-        debug_assert!(slot < 4, "2×2 聚合每粗变量至多 4 子");
-        child[j * 4 + slot] = i as i32;
-        child_cnt[j] = slot + 1;
-    }
-
-    // ② Galerkin：diag_c[J] = Σ_{i∈J} diag[i] - 2·Σ_内部边权；粗边权 = Σ 跨界细边权。
+    let mut child_cnt = vec![0u8; nc];
     let mut diag_c = vec![0.0f64; nc];
     for i in 0..nf {
-        diag_c[agg[i] as usize] += fine.diag[i];
+        let j = agg[i] as usize;
+        diag_c[j] += fine.diag[i];
+        let s = child_cnt[j] as usize;
+        debug_assert!(s < 4, "2×2 聚合每粗变量至多 4 子");
+        child[j * 4 + s] = i as i32;
+        child_cnt[j] = (s + 1) as u8;
     }
-    // 无向边只处理一次（i<j）。
-    let mut cedge: HashMap<(i32, i32), f64> = HashMap::new();
+
+    // ③ 直接累加到粗邻居槽（≤4 度网格），免全局边表；无向边只处理一次（i<j）。
+    //    diag_c[J] -= 2·内部边权；粗边权 = Σ 跨界细边权。
+    let mut nbr_c = vec![-1i32; nc * 4];
+    let mut wgt_c = vec![0.0f64; nc * 4];
+    let add_edge = |a: usize, b: i32, w: f64, nbr_c: &mut Vec<i32>, wgt_c: &mut Vec<f64>| {
+        let base = a * 4;
+        for s in 0..4 {
+            if nbr_c[base + s] == b {
+                wgt_c[base + s] += w;
+                return;
+            }
+            if nbr_c[base + s] < 0 {
+                nbr_c[base + s] = b;
+                wgt_c[base + s] = w;
+                return;
+            }
+        }
+        debug_assert!(false, "2×2 聚合粗图应为 ≤4 度网格");
+    };
     for i in 0..nf {
         let capj = agg[i];
         for k in 0..4 {
@@ -142,30 +163,10 @@ fn coarsen(fine: &Level) -> Coarsen {
             if capj == capk {
                 diag_c[capj as usize] -= 2.0 * w; // 内部边
             } else {
-                let key = if capj < capk {
-                    (capj, capk)
-                } else {
-                    (capk, capj)
-                };
-                *cedge.entry(key).or_insert(0.0) += w; // 跨界边
+                add_edge(capj as usize, capk, w, &mut nbr_c, &mut wgt_c);
+                add_edge(capk as usize, capj, w, &mut nbr_c, &mut wgt_c);
             }
         }
-    }
-
-    // ③ 物化粗层紧凑邻接（每粗变量 ≤4 邻）。
-    let mut nbr_c = vec![-1i32; nc * 4];
-    let mut wgt_c = vec![0.0f64; nc * 4];
-    let mut deg_c = vec![0usize; nc];
-    let push_nbr = |a: i32, b: i32, w: f64, nbr_c: &mut Vec<i32>, wgt_c: &mut Vec<f64>, deg_c: &mut Vec<usize>| {
-        let slot = deg_c[a as usize];
-        debug_assert!(slot < 4, "2×2 聚合粗图应为 ≤4 度网格");
-        nbr_c[a as usize * 4 + slot] = b;
-        wgt_c[a as usize * 4 + slot] = w;
-        deg_c[a as usize] = slot + 1;
-    };
-    for (&(a, b), &w) in &cedge {
-        push_nbr(a, b, w, &mut nbr_c, &mut wgt_c, &mut deg_c);
-        push_nbr(b, a, w, &mut nbr_c, &mut wgt_c, &mut deg_c);
     }
 
     let next = Level {

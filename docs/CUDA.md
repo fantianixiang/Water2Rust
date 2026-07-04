@@ -173,8 +173,15 @@ profile（vs faer 直接解，rtol=1e-10）：
 - **阈值**：`GPU_PCG_MIN_VARS=150k`。实测 e2e 交叉点 ~80-110k（n=112k MG 已胜、73k 持平、50k faer 胜——
   小系统 GPU 固定开销 + 主机建层次未摊薄）；设 150k 留保护裕度，小系统走 faer 无回退，大河走 MG 得实质加速。
   数值 parity 已验证（真实 Python 夹具 2e-11、578k 圆盘 vs faer 8.6e-9 < 1e-6）。
-- **待办**：(a) 主机层次构建 ~54ms 可并行/缓存以降 e2e、下移交叉点；(b) smoothed aggregation 进一步降迭代；
-  (c) 融合核 + 标量驻留设备减少每迭代 D2H。
+- **优化①：主机并行化（rayon）** ✅——瓶颈已从 GPU 移到主机单线程装配/建层次。`build_pcg_compact`
+  改逐行并行扫描 + 前缀和编号 + 逐变量并行装配（i32 反查表）：装配 **64ms → 35ms**；层次构建的
+  聚合/Galerkin 改稠密块表 + 直接粗邻居槽累加（免 HashMap SipHash）。真实大河 e2e **260ms → 200ms（2.1× vs faer）**。
+- **待办（剩余杠杆，按性价比）**：
+  - **混合精度 FP32 V-cycle 预条件**：5070 FP32 = 64× FP64，预条件只需近似（外层 CG 保 FP64 → 最终精度不变、parity 不受损），
+    V-cycle 显存流量减半 → GPU kernel（当前 ~90ms/60 迭代）预计 ~1.7×。**下一步首选**。
+  - **减少设备分配**：launcher 每层多次 `cudaMalloc` → 合并大 slab + pinned 内存，削 H2D/分配开销。
+  - **融合核 + 标量驻留设备（CUDA graph）**：省每迭代 launch/点积 D2H 同步。
+  - smoothed aggregation / W-cycle：进一步降迭代（60→~35），当前边际收益较小。
 
 > 合成规模扫描（紧凑方形网格）：MG-PCG n=1M kernel 86ms vs faer 1332ms = 15.5×、vs Jacobi-PCG 508ms = 5.9×。
 > **但真实细长河 e2e 受主机装配/建层次限制**（大河 ~140ms 中 GPU 仅 74ms），故实际 2.9×——仍是决定性反超。

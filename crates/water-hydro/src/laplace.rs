@@ -257,40 +257,62 @@ pub fn build_pcg_compact(
     dirichlet_mask: &Array2<bool>,
     dirichlet_z: &Array2<f64>,
 ) -> (Vec<f64>, Vec<i32>, Vec<f64>, Vec<(usize, usize)>) {
+    use rayon::prelude::*;
+
     let (h, w) = poly_mask.dim();
-    let mut var_idx = Array2::<i64>::from_elem((h, w), -1);
-    let mut int_rc: Vec<(usize, usize)> = Vec::new();
+    // ── 阶段①：逐行并行收集变量列，前缀和得全局变量编号（免 15.5M 全网格串行扫描）──
+    let row_vars: Vec<Vec<usize>> = (0..h)
+        .into_par_iter()
+        .map(|r| {
+            (0..w)
+                .filter(|&c| poly_mask[(r, c)] && !dirichlet_mask[(r, c)])
+                .collect()
+        })
+        .collect();
+    let mut row_base = vec![0usize; h + 1];
     for r in 0..h {
-        for c in 0..w {
-            if poly_mask[(r, c)] && !dirichlet_mask[(r, c)] {
-                var_idx[(r, c)] = int_rc.len() as i64;
-                int_rc.push((r, c));
-            }
+        row_base[r + 1] = row_base[r] + row_vars[r].len();
+    }
+    let n = row_base[h];
+
+    // int_rc 与 var_idx（i32，n < 2^31）：变量像素坐标 + 稠密反查表。
+    let mut int_rc = vec![(0usize, 0usize); n];
+    let mut var_idx = Array2::<i32>::from_elem((h, w), -1);
+    for r in 0..h {
+        let base = row_base[r];
+        for (j, &c) in row_vars[r].iter().enumerate() {
+            int_rc[base + j] = (r, c);
+            var_idx[(r, c)] = (base + j) as i32;
         }
     }
-    let n = int_rc.len();
+
+    // ── 阶段②：逐变量并行装配 diag/nbr/b（各变量独立，只读 var_idx/掩膜）──
     let mut diag = vec![0.0f64; n];
     let mut b = vec![0.0f64; n];
     let mut nbr = vec![-1i32; n * 4];
-    for (i, &(r, c)) in int_rc.iter().enumerate() {
-        let mut n_nb = 0.0f64;
-        for (k, (dr, dc)) in OFFSETS.iter().enumerate() {
-            let nr = r as i64 + dr;
-            let nc = c as i64 + dc;
-            if nr < 0 || nr >= h as i64 || nc < 0 || nc >= w as i64 {
-                continue; // 域外：nbr 保持 -1
+    diag.par_iter_mut()
+        .zip(b.par_iter_mut())
+        .zip(nbr.par_chunks_mut(4))
+        .zip(int_rc.par_iter())
+        .for_each(|(((d, bi), nb), &(r, c))| {
+            let mut n_nb = 0.0f64;
+            for (k, (dr, dc)) in OFFSETS.iter().enumerate() {
+                let nr = r as i64 + dr;
+                let nc = c as i64 + dc;
+                if nr < 0 || nr >= h as i64 || nc < 0 || nc >= w as i64 {
+                    continue; // 域外：nbr 保持 -1
+                }
+                let (nr, nc) = (nr as usize, nc as usize);
+                if poly_mask[(nr, nc)] && !dirichlet_mask[(nr, nc)] {
+                    nb[k] = var_idx[(nr, nc)]; // 内部邻居
+                    n_nb += 1.0;
+                } else if dirichlet_mask[(nr, nc)] {
+                    *bi += dirichlet_z[(nr, nc)]; // Dirichlet 邻居定值并入 b
+                    n_nb += 1.0;
+                }
             }
-            let (nr, nc) = (nr as usize, nc as usize);
-            if poly_mask[(nr, nc)] && !dirichlet_mask[(nr, nc)] {
-                nbr[i * 4 + k] = var_idx[(nr, nc)] as i32; // 内部邻居
-                n_nb += 1.0;
-            } else if dirichlet_mask[(nr, nc)] {
-                b[i] += dirichlet_z[(nr, nc)]; // Dirichlet 邻居定值并入 b
-                n_nb += 1.0;
-            }
-        }
-        diag[i] = n_nb;
-    }
+            *d = n_nb;
+        });
     (diag, nbr, b, int_rc)
 }
 
