@@ -223,8 +223,8 @@ impl eframe::App for WaterGuiApp {
         });
 
         egui::SidePanel::left("params")
-            .resizable(true)
-            .default_width(460.0)
+            .resizable(false)
+            .exact_width(460.0)
             .show(ctx, |ui| self.params_ui(ui));
 
         // 右侧上部：任务进度 + 结果信息（固定高度，随内容自适应）。
