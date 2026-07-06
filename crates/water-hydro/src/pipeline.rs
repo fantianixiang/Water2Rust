@@ -18,7 +18,7 @@ use std::time::Instant;
 use water_io::raster::{Dem, DemMeta};
 use water_io::vector::read_vector;
 use water_io::warp::{reproject_masked, reproject_with_max_error, suggested_warp_output, Resampling};
-use water_io::geotiff_write::write_geotiff_f32;
+use water_io::geotiff_write::{write_geotiff_f32, write_geotiff_f32_banded};
 use water_core::error::WaterError;
 use water_core::Result;
 
@@ -38,6 +38,10 @@ const HYDRO_WARP_MASK_DILATE: usize = 2 * HYDRO_WATER_SKIRT_PIXELS + 6;
 const GDAL_WARP_MAX_ERROR: f64 = 0.125;
 /// 内存整幅栅格像素上限（Python `HYDRO_MAX_FULL_RASTER_PIXELS`）。
 const HYDRO_MAX_FULL_RASTER_PIXELS: u64 = 250_000_000;
+
+/// 整幅**输出**像素上限：≤ 此值走「全幅铺底 + 单条带写」（与既有文件级一致，含林芝）；
+/// 超过则走「流式逐条带写」，峰值内存仅一个瓦片行带，避免超大图（如 NJ ~150 亿像元）OOM。
+const HYDRO_FULLFRAME_OUT_MAX_PIXELS: u64 = 700_000_000;
 /// 输出 nodata。
 const OUTPUT_NODATA: f64 = -9999.0;
 /// 瓦片边长（源像素）。Python `HYDRO_TILED_TILE_SIZE`。
@@ -400,19 +404,6 @@ fn run_hydro_pipeline_tiled(
     let with_dem = matches!(job.output_mode, OutputMode::WaterSurfaceWithDem);
     let prof = profile_on();
 
-    // 全幅输出：with_dem 用整幅精确源 DEM 铺底；only 用 nodata。
-    let t_base = Instant::now();
-    let mut out: Array2<f32> = if with_dem {
-        let (mut full_dem, _t) = dem.read_window_f32(0, 0, fw, fh)?;
-        full_dem.mapv_inplace(|v| if v.is_finite() { v } else { OUTPUT_NODATA as f32 });
-        full_dem
-    } else {
-        Array2::from_elem((fh as usize, fw as usize), OUTPUT_NODATA as f32)
-    };
-    if prof {
-        tracing::info!("[profile] 全幅铺底读入 {:.2}s（{fw}×{fh}）", t_base.elapsed().as_secs_f64());
-    }
-
     // 各源多边形 bbox（源 CRS 坐标），用于瓦片重叠判定。
     let src_bboxes: Vec<[f64; 4]> = polys_src
         .iter()
@@ -489,61 +480,146 @@ fn run_hydro_pipeline_tiled(
         .num_threads(n_threads)
         .build()
         .map_err(|err| WaterError::Other(anyhow::anyhow!("rayon 线程池构建失败: {err}")))?;
-    let done = std::sync::atomic::AtomicU32::new(0);
     let acc = PhaseAcc::default();
-    let t_tiles = Instant::now();
-    let results: Vec<(Win, Array2<f32>)> = pool.install(|| -> Result<Vec<(Win, Array2<f32>)>> {
-        let mut all: Vec<(Win, Array2<f32>)> = Vec::with_capacity(jobs.len());
-        for chunk in jobs.chunks(mem_tiles) {
-            let mut cr: Vec<(Win, Array2<f32>)> = chunk
-                .par_iter()
-                .map(|&(pad_win, core_win)| {
-                    let core = process_window(
-                        dem, m, src_epsg, target_epsg, polys_target, fclass,
-                        job.all_touched, job.output_mode, pad_win, core_win,
-                        if prof { Some(&acc) } else { None },
-                    )?;
-                    let k = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                    tracing::info!("[hydro] 含水瓦片 {k}/{n_water} 完成");
-                    Ok((core_win, core))
-                })
-                .collect::<Result<Vec<_>>>()?;
-            all.append(&mut cr);
-        }
-        Ok(all)
-    })?;
-    if prof {
-        tracing::info!(
-            "[profile] 瓦片处理 {:.2}s（墙钟）| 分项累加(跨{HYDRO_TILE_WORKERS}线程): 读={:.2}s warp={:.2}s 解算={:.2}s 组合={:.2}s",
-            t_tiles.elapsed().as_secs_f64(),
-            acc.read_ns.load(Ordering::Relaxed) as f64 / 1e9,
-            acc.warp_ns.load(Ordering::Relaxed) as f64 / 1e9,
-            acc.solve_ns.load(Ordering::Relaxed) as f64 / 1e9,
-            acc.compose_ns.load(Ordering::Relaxed) as f64 / 1e9,
-        );
-    }
+    let is_geo = proj_from_epsg(src_epsg)?.is_latlong();
 
-    // ── 顺序写回全幅输出（各 core 区互不重叠，与串行逐位一致）──
-    let t_asm = Instant::now();
-    for ((tcol0, trow0, tw, th), core) in results {
-        for r in 0..th as usize {
-            for c in 0..tw as usize {
-                out[(trow0 as usize + r, tcol0 as usize + c)] = core[(r, c)];
+    // 瓦片处理助手：把给定作业按 mem_tiles 分块并行处理，产出各 core 子块。
+    let process_jobs = |these: &[(Win, Win)], done: &std::sync::atomic::AtomicU32|
+     -> Result<Vec<(Win, Array2<f32>)>> {
+        pool.install(|| -> Result<Vec<(Win, Array2<f32>)>> {
+            let mut all: Vec<(Win, Array2<f32>)> = Vec::with_capacity(these.len());
+            for chunk in these.chunks(mem_tiles) {
+                let mut cr: Vec<(Win, Array2<f32>)> = chunk
+                    .par_iter()
+                    .map(|&(pad_win, core_win)| {
+                        let core = process_window(
+                            dem, m, src_epsg, target_epsg, polys_target, fclass,
+                            job.all_touched, job.output_mode, pad_win, core_win,
+                            if prof { Some(&acc) } else { None },
+                        )?;
+                        let k = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                        tracing::info!("[hydro] 含水瓦片 {k}/{n_water} 完成");
+                        Ok((core_win, core))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                all.append(&mut cr);
+            }
+            Ok(all)
+        })
+    };
+
+    // 预算分派：整幅输出可放心装内存 → 全幅铺底 + 单条带写（与既有文件级逐位一致）；
+    // 否则 → 流式逐条带写，峰值内存仅一个瓦片行带（避免超大图 OOM）。
+    // env `WATER_HYDRO_FORCE_STREAM=1` 可强制走流式（用于测试/低内存环境）。
+    let force_stream = std::env::var("WATER_HYDRO_FORCE_STREAM").map(|v| v == "1").unwrap_or(false);
+    let stream = force_stream || (fw as u64 * fh as u64) > HYDRO_FULLFRAME_OUT_MAX_PIXELS;
+
+    if !stream {
+        // ── 全幅路径（小图，保持既有文件级一致）──
+        let t_base = Instant::now();
+        let mut out: Array2<f32> = if with_dem {
+            let (mut full_dem, _t) = dem.read_window_f32(0, 0, fw, fh)?;
+            full_dem.mapv_inplace(|v| if v.is_finite() { v } else { OUTPUT_NODATA as f32 });
+            full_dem
+        } else {
+            Array2::from_elem((fh as usize, fw as usize), OUTPUT_NODATA as f32)
+        };
+        if prof {
+            tracing::info!("[profile] 全幅铺底读入 {:.2}s（{fw}×{fh}）", t_base.elapsed().as_secs_f64());
+        }
+        let done = std::sync::atomic::AtomicU32::new(0);
+        let t_tiles = Instant::now();
+        let results = process_jobs(&jobs, &done)?;
+        if prof {
+            tracing::info!(
+                "[profile] 瓦片处理 {:.2}s（墙钟）| 分项累加(跨{HYDRO_TILE_WORKERS}线程): 读={:.2}s warp={:.2}s 解算={:.2}s 组合={:.2}s",
+                t_tiles.elapsed().as_secs_f64(),
+                acc.read_ns.load(Ordering::Relaxed) as f64 / 1e9,
+                acc.warp_ns.load(Ordering::Relaxed) as f64 / 1e9,
+                acc.solve_ns.load(Ordering::Relaxed) as f64 / 1e9,
+                acc.compose_ns.load(Ordering::Relaxed) as f64 / 1e9,
+            );
+        }
+        let t_asm = Instant::now();
+        for ((tcol0, trow0, tw, th), core) in results {
+            for r in 0..th as usize {
+                for c in 0..tw as usize {
+                    out[(trow0 as usize + r, tcol0 as usize + c)] = core[(r, c)];
+                }
             }
         }
-    }
-    tracing::info!(
-        "[hydro] 全部 {total_tiles} 个瓦片处理完成（含水 {n_water}，无水 {n_dry}），输出 {fh}×{fw}"
-    );
-    if prof {
-        tracing::info!("[profile] 写回全幅 {:.2}s", t_asm.elapsed().as_secs_f64());
-    }
-
-    let is_geo = proj_from_epsg(src_epsg)?.is_latlong();
-    let t_write = Instant::now();
-    write_geotiff_f32(&job.output_path, &out, full_t, src_epsg, is_geo, Some(OUTPUT_NODATA))?;
-    if prof {
-        tracing::info!("[profile] 输出写盘 {:.2}s", t_write.elapsed().as_secs_f64());
+        tracing::info!(
+            "[hydro] 全部 {total_tiles} 个瓦片处理完成（含水 {n_water}，无水 {n_dry}），输出 {fh}×{fw}"
+        );
+        if prof {
+            tracing::info!("[profile] 写回全幅 {:.2}s", t_asm.elapsed().as_secs_f64());
+        }
+        let t_write = Instant::now();
+        write_geotiff_f32(&job.output_path, &out, full_t, src_epsg, is_geo, Some(OUTPUT_NODATA))?;
+        if prof {
+            tracing::info!("[profile] 输出写盘 {:.2}s", t_write.elapsed().as_secs_f64());
+        }
+    } else {
+        // ── 流式逐条带路径（超大图）：按瓦片行带自顶向下产出并直接写盘 ──
+        // 各含水瓦片核 core 行起点 trow0 恒为 tile 的整数倍，故按 trow0/tile 归入行带；
+        // 条带 rows_per_strip = tile，与瓦片行对齐，末带自动取剩余行。
+        use std::collections::HashMap;
+        let mut by_band: HashMap<u32, Vec<(Win, Win)>> = HashMap::new();
+        for &j in &jobs {
+            by_band.entry(j.1 .1 / tile).or_default().push(j);
+        }
+        tracing::info!(
+            "[hydro] 流式逐条带写（整幅 {fw}×{fh} 超内存预算，条带 {tile} 行，含水 {n_water} 无水 {n_dry}）…"
+        );
+        let done = std::sync::atomic::AtomicU32::new(0);
+        let t_stream = Instant::now();
+        write_geotiff_f32_banded(
+            &job.output_path,
+            fw as usize,
+            fh as usize,
+            full_t,
+            src_epsg,
+            is_geo,
+            Some(OUTPUT_NODATA),
+            tile,
+            |row_start, band_h| -> anyhow::Result<Vec<f32>> {
+                // 铺底：with_dem 读本行带精确源 DEM；only 用 nodata。
+                let mut band: Array2<f32> = if with_dem {
+                    let (mut d, _t) = dem.read_window_f32(0, row_start as u32, fw, band_h as u32)?;
+                    d.mapv_inplace(|v| if v.is_finite() { v } else { OUTPUT_NODATA as f32 });
+                    d
+                } else {
+                    Array2::from_elem((band_h, fw as usize), OUTPUT_NODATA as f32)
+                };
+                // 处理本行带含水瓦片，盖印到带缓冲（core 非水像元即精确源 DEM，与铺底一致）。
+                let band_idx = row_start as u32 / tile;
+                if let Some(bj) = by_band.get(&band_idx) {
+                    let results = process_jobs(bj, &done)?;
+                    for ((tcol0, trow0, tw, th), core) in results {
+                        let dr = trow0 as usize - row_start; // 带对齐瓦片行，dr=0
+                        for r in 0..th as usize {
+                            for c in 0..tw as usize {
+                                band[(dr + r, tcol0 as usize + c)] = core[(r, c)];
+                            }
+                        }
+                    }
+                }
+                Ok(band.into_raw_vec_and_offset().0)
+            },
+        )?;
+        tracing::info!(
+            "[hydro] 全部 {total_tiles} 个瓦片处理完成（含水 {n_water}，无水 {n_dry}），输出 {fh}×{fw}"
+        );
+        if prof {
+            tracing::info!(
+                "[profile] 流式处理+写盘 {:.2}s | 分项累加(跨{HYDRO_TILE_WORKERS}线程): 读={:.2}s warp={:.2}s 解算={:.2}s 组合={:.2}s",
+                t_stream.elapsed().as_secs_f64(),
+                acc.read_ns.load(Ordering::Relaxed) as f64 / 1e9,
+                acc.warp_ns.load(Ordering::Relaxed) as f64 / 1e9,
+                acc.solve_ns.load(Ordering::Relaxed) as f64 / 1e9,
+                acc.compose_ns.load(Ordering::Relaxed) as f64 / 1e9,
+            );
+        }
     }
     Ok(())
 }

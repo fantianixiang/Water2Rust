@@ -20,5 +20,5 @@ pub mod warp {
 
 /// GeoTIFF float32 写出 —— 已上游至 `eci-gdal-geotiff`，此处 re-export。
 pub mod geotiff_write {
-    pub use eci_gdal_geotiff::write_geotiff_f32;
+    pub use eci_gdal_geotiff::{write_geotiff_f32, write_geotiff_f32_banded};
 }
