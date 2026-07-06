@@ -8,6 +8,9 @@
 // （中央经线 ±3°）内精度 ~mm；与 proj4rs 的 etmerc 有 ~sub-cm 级差异（可接受）。
 // 采样约定（含 nodata 门控、containing 像元判定）对齐 CPU `warp_reproject.rs`。
 
+// Windows/MSVC 的 <math.h> 默认不定义 M_PI，需先 _USE_MATH_DEFINES（Linux glibc 默认提供）；
+// 必须在首个 math 头包含之前定义，故置于所有 include 之前。
+#define _USE_MATH_DEFINES
 #include "common.cuh"
 #include <math.h>
 

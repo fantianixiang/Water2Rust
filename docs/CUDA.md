@@ -200,6 +200,26 @@ profile（vs faer 直接解，rtol=1e-10）：
 3. **中——形态学 / 高斯 / 距离变换 / 骨架**：替代 scipy.ndimage / skimage，可用 NPP 或自研核，
    与 `water-core::raster_ops` 对拍。
 
+## Windows 移植与 GPU warp 对拍决策（2026-07-06）
+
+GPU/Project 移植到 Windows（VS 2026 v18 + CUDA 13.3.1 + `--features gpu`）并做真实地形三方对拍
+（`linzhi_clip`，与 rust/shadcn CPU 黄金基准 `waters_hydro.tif` 逐位比对）：
+
+| 路径 | vs 黄金基准 max | mean | p99 | >0.1m 像素 |
+| --- | --- | --- | --- | --- |
+| CPU（GPU off） | **0（逐位一致）** | 0 | 0 | 0 |
+| GPU（含 GPU warp） | **76.0 m** | 1.7 mm | 16 mm | 16445（0.2%） |
+| GPU（warp 走 CPU，仅 Laplace GPU） | **0（逐位一致）** | 0 | 0 | 0 |
+
+- **根因**：GPU warp 的双线性采样 / nodata 门控在**水陆边界差 ±1 像素**，陡岸处水面高程 vs 岸坡高程
+  一翻即数十米。99% 区域仍 mm 级，仅一条边界带（0.2%）出现大差。非 Windows 特有（核与 Linux 同字节）。
+- **决策（方案 A）**：**GPU warp 默认关闭**，生产 warp 恒走 CPU（与黄金基准逐位一致）；GPU 仅加速
+  主瓶颈 Laplace（对拍 < 6e-7）。warp 上 GPU 仅省 ~2s，却引入边界误差，得不偿失。
+  `gpu_warp_applicable`（`water-hydro/src/pipeline.rs`）改为**仅 env `WATER_HYDRO_GPU_WARP=1` 显式开启**（对拍/实验用）。
+- **Windows 构建要点**：① CUDA 自定义安装须去掉 **Driver** 与 **Visual Studio Integration**（后者在 VS18 下
+  报 `0x80070715` 致整包失败）；② `warp.cu` 在 MSVC 下需 `#define _USE_MATH_DEFINES` 才有 `M_PI`；
+  ③ 须在 vcvars64 开发者环境（`cl.exe`/`lib.exe`）+ `%CUDA_PATH%\bin` 上 PATH 下 `cargo build --features gpu`。
+
 ## 性能基线（GPU 要超越，来自 rust/shadcn CPU 版）
 
 | 数据集 | 规模 | CPU-Rust hydro |

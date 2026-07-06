@@ -188,18 +188,23 @@ fn invert_affine(t: &[f64; 6]) -> Option<[f64; 6]> {
 
 /// GPU warp 是否适用（`--features gpu` 且一侧局地 UTM、另一侧 WGS84(4326)）。
 /// 适用时正向 warp 走 GPU 全算，可**跳过 CPU 掩膜构建**（binary_dilation 膨胀）。
-/// env `WATER_HYDRO_GPU_WARP=0` 可关闭 GPU warp（保留 GPU Laplace，用于对拍/回退）。
+///
+/// **默认关闭**：GPU warp 的双线性采样/nodata 门控在水陆边界与 CPU 差 ±1 像素，
+/// 陡岸处可致数十米高程差（真实林芝对拍 max≈76m、约 0.2% 边界像素，见 docs/CUDA.md）。
+/// 生产 warp 恒走 CPU（与黄金基准逐位一致），GPU 仅加速主瓶颈 Laplace 求解。
+/// 仅 env `WATER_HYDRO_GPU_WARP=1` 显式开启（对拍/实验用）。
 fn gpu_warp_applicable(_a: u16, _b: u16) -> bool {
     #[cfg(feature = "gpu")]
     {
         if !crate::gpu_enabled() {
             return false;
         }
-        if std::env::var("WATER_HYDRO_GPU_WARP").map(|v| v == "0").unwrap_or(false) {
-            return false;
+        if std::env::var("WATER_HYDRO_GPU_WARP").map(|v| v == "1").unwrap_or(false) {
+            (water_gpu::UtmParams::from_epsg(_a).is_some() && _b == 4326)
+                || (water_gpu::UtmParams::from_epsg(_b).is_some() && _a == 4326)
+        } else {
+            false
         }
-        (water_gpu::UtmParams::from_epsg(_a).is_some() && _b == 4326)
-            || (water_gpu::UtmParams::from_epsg(_b).is_some() && _a == 4326)
     }
     #[cfg(not(feature = "gpu"))]
     {
