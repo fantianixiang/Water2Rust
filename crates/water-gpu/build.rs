@@ -14,6 +14,7 @@ const CU_SOURCES: &[&str] = &[
     "cuda/vector_add.cu",
     "cuda/laplace_pcg.cu",
     "cuda/laplace_mg.cu",
+    "cuda/nvtx_util.cu",
 ];
 
 fn main() {

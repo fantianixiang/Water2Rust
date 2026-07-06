@@ -100,6 +100,23 @@ pub enum GpuError {
 /// 结果别名。
 pub type Result<T> = std::result::Result<T, GpuError>;
 
+extern "C" {
+    fn water_nvtx_push(name: *const std::os::raw::c_char);
+    fn water_nvtx_pop();
+}
+
+/// 压入一个 NVTX 区间（供 Nsight `--nvtx` 时间线命名着色）。与 [`nvtx_pop`] 成对使用。
+pub fn nvtx_push(name: &str) {
+    if let Ok(c) = std::ffi::CString::new(name) {
+        unsafe { water_nvtx_push(c.as_ptr()) };
+    }
+}
+
+/// 弹出最近压入的 NVTX 区间。
+pub fn nvtx_pop() {
+    unsafe { water_nvtx_pop() };
+}
+
 /// 在 GPU 上逐元素相加 `a + b`，返回结果向量与分段耗时（H2D/kernel/D2H, ms）。
 ///
 /// 主要用于全链路自检；两向量长度必须一致。

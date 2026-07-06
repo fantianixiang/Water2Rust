@@ -81,11 +81,13 @@ fn main() {
             }
             let rows: Vec<i32> = int_rc.iter().map(|&(r, _)| r as i32).collect();
             let cols: Vec<i32> = int_rc.iter().map(|&(_, c)| c as i32).collect();
+            let name = std::path::Path::new(f).file_name().unwrap().to_string_lossy();
+            water_gpu::nvtx_push(&name); // Nsight --nvtx 按系统命名着色
             let t = Instant::now();
             let res = water_gpu::mg::laplace_pcg_mg(&diag, &nbr, &b, &rows, &cols, 1e-13, 5000, 2, 2, 40, 0.8)
                 .expect("GPU MG-PCG 失败");
+            water_gpu::nvtx_pop();
             let wall = t.elapsed().as_secs_f64() * 1e3;
-            let name = std::path::Path::new(f).file_name().unwrap().to_string_lossy();
             let conv = res.residual.is_finite() && res.residual <= 1e-13;
             if conv {
                 n_conv += 1;

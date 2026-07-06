@@ -9,6 +9,7 @@
 
 #include <cmath>
 #include <cstdlib>
+#include <nvtx3/nvToolsExt.h>
 #include <vector>
 
 static const int MG_BLOCK = 256;
@@ -303,6 +304,7 @@ extern "C" int water_laplace_pcg_mg(
   CudaTimer timer;
 
   // ── H2D：逐层分配并上传 FP32 算子 + 工作缓冲 ──
+  nvtxRangePushA("mg_h2d");
   timer.start();
   for (int l = 0; l < L; l++) {
     const int n = level_n[l];
@@ -353,6 +355,7 @@ extern "C" int water_laplace_pcg_mg(
   CUDA_CHECK(cudaMemcpy(d_b, h_b, bytes0, cudaMemcpyHostToDevice));
   CUDA_CHECK(cudaMemset(d_z, 0, bytes0));
   const double h2d_ms = timer.stop_ms();
+  nvtxRangePop();
 
   // 非默认 stream + V-cycle CUDA 图：V-cycle 是固定核序列（无数据依赖分支），捕获一次后
   // 每次 PCG 迭代重放一次图，将 ~96 次微核启动压成 1 次图启动（消 launch-bound 开销）。
@@ -366,6 +369,7 @@ extern "C" int water_laplace_pcg_mg(
   CUDA_CHECK(cudaGraphInstantiate(&vexec, vgraph, 0));
 
   // ── 求解循环（混合精度：FP64 外层 CG + FP32 MG V-cycle 图重放预条件）──
+  nvtxRangePushA("mg_solve");
   timer.start();
   // r=b（z=0）
   CUDA_CHECK(cudaMemcpyAsync(d_r, d_b, bytes0, cudaMemcpyDeviceToDevice, stream));
@@ -411,11 +415,14 @@ extern "C" int water_laplace_pcg_mg(
   }
   CUDA_CHECK_KERNEL("laplace_pcg_mg");
   const double kernel_ms = timer.stop_ms();
+  nvtxRangePop();
 
   // ── D2H ──
+  nvtxRangePushA("mg_d2h");
   timer.start();
   CUDA_CHECK(cudaMemcpy(h_z, d_z, bytes0, cudaMemcpyDeviceToHost));
   const double d2h_ms = timer.stop_ms();
+  nvtxRangePop();
 
   cudaGraphExecDestroy(vexec);
   cudaGraphDestroy(vgraph);
