@@ -15,6 +15,23 @@ use crate::error::{Result, WaterError};
 use ndarray::Array2;
 use rayon::prelude::*;
 
+/// 逐行处理阈值：输出元素数 ≥ 此值才行并行；否则串行。
+///
+/// 消除「外层 par_iter（瓦片 / 多边形）+ 内层行并行」的嵌套小任务开销——per-polygon 求解
+/// 里许多原语作用于**小窗口**，此时并行的任务切分/调度开销反而拖慢（甚至因线程争用被放大）。
+/// 只改执行策略，结果与全并行**逐位一致**。
+const PAR_ROW_MIN_ELEMS: usize = 1 << 18; // 262144 ≈ 512²
+
+/// 逐行 `for_each`：大数组行并行、小数组串行（结果逐位一致）。
+#[inline]
+fn for_each_row_mut<T: Send>(out: &mut [T], w: usize, f: impl Fn(usize, &mut [T]) + Sync) {
+    if out.len() >= PAR_ROW_MIN_ELEMS {
+        out.par_chunks_mut(w).enumerate().for_each(|(r, row)| f(r, row));
+    } else {
+        out.chunks_mut(w).enumerate().for_each(|(r, row)| f(r, row));
+    }
+}
+
 /// 二值形态学腐蚀（scipy.ndimage.binary_erosion 默认语义）�?
 ///
 /// 结构元为 4 邻域十字（`generate_binary_structure(2, 1)`：中�?+ 上下左右），
@@ -58,7 +75,7 @@ pub fn binary_dilation(mask: &Array2<bool>, iterations: usize) -> Array2<bool> {
     for _ in 0..iterations {
         let mut out = cur.clone();
         let curr = &cur;
-        out.as_slice_mut().unwrap().par_chunks_mut(w).enumerate().for_each(|(r, orow)| {
+        for_each_row_mut(out.as_slice_mut().unwrap(), w, |r, orow| {
             for (c, ov) in orow.iter_mut().enumerate() {
                 if curr[(r, c)] {
                     continue;
@@ -107,10 +124,10 @@ pub fn gaussian_smooth(data: &Array2<f64>, sigma: f64) -> Array2<f64> {
     }
 
     let (h, w) = data.dim();
-    // 沿轴 0（行方向/纵向�?
+    // 沿轴 0（行方向/纵向）
     let mut tmp = Array2::<f64>::zeros((h, w));
     // 逐行并行（每个输出元素独立，读只读输入；与串行逐位一致）。
-    tmp.as_slice_mut().unwrap().par_chunks_mut(w).enumerate().for_each(|(r, trow)| {
+    for_each_row_mut(tmp.as_slice_mut().unwrap(), w, |r, trow| {
         for (c, tv) in trow.iter_mut().enumerate() {
             let mut acc = 0.0;
             for (k, &wk) in kernel.iter().enumerate() {
@@ -120,9 +137,9 @@ pub fn gaussian_smooth(data: &Array2<f64>, sigma: f64) -> Array2<f64> {
             *tv = acc;
         }
     });
-    // 沿轴 1（列方向/横向�?
+    // 沿轴 1（列方向/横向）
     let mut out = Array2::<f64>::zeros((h, w));
-    out.as_slice_mut().unwrap().par_chunks_mut(w).enumerate().for_each(|(r, orow)| {
+    for_each_row_mut(out.as_slice_mut().unwrap(), w, |r, orow| {
         for (c, ov) in orow.iter_mut().enumerate() {
             let mut acc = 0.0;
             for (k, &wk) in kernel.iter().enumerate() {
@@ -153,7 +170,7 @@ pub fn gaussian_smooth_f32(data: &Array2<f32>, sigma: f64) -> Array2<f64> {
 
     // �?0（行）：累加 f64，中间结果按 f32 舍入�?
     let mut tmp = Array2::<f32>::zeros((h, w));
-    tmp.as_slice_mut().unwrap().par_chunks_mut(w).enumerate().for_each(|(r, trow)| {
+    for_each_row_mut(tmp.as_slice_mut().unwrap(), w, |r, trow| {
         for (c, tv) in trow.iter_mut().enumerate() {
             let mut acc = 0.0f64;
             for (k, &wk) in kernel.iter().enumerate() {
@@ -163,9 +180,9 @@ pub fn gaussian_smooth_f32(data: &Array2<f32>, sigma: f64) -> Array2<f64> {
             *tv = acc as f32;
         }
     });
-    // �?1（列）：�?f32 中间结果，累�?f64，输出按 f32 舍入后提升为 f64�?
+    // 轴 1（列）：读 f32 中间结果，累加 f64，输出按 f32 舍入后提升为 f64。
     let mut out = Array2::<f64>::zeros((h, w));
-    out.as_slice_mut().unwrap().par_chunks_mut(w).enumerate().for_each(|(r, orow)| {
+    for_each_row_mut(out.as_slice_mut().unwrap(), w, |r, orow| {
         for (c, ov) in orow.iter_mut().enumerate() {
             let mut acc = 0.0f64;
             for (k, &wk) in kernel.iter().enumerate() {
