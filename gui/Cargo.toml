@@ -8,6 +8,10 @@ license.workspace = true
 name = "water2rust-gui"
 path = "src/main.rs"
 
+[features]
+# 编译 GPU 加速（CUDA）。以 --features gpu 构建可在 GUI 内切换 CPU/GPU。
+gpu = ["water-hydro/gpu"]
+
 [dependencies]
 # 业务 crate（直接链接，零子进程、零 Python）
 water-core.workspace = true

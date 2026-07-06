@@ -60,6 +60,8 @@ pub struct WaterGuiApp {
     do_edge: bool,
     do_hydro: bool,
     hydro_with_dem: bool,
+    /// 是否使用 GPU 加速 hydro（仅编译含 gpu 特性时可选；否则恒为 CPU）。
+    use_gpu: bool,
 
     /// edge 参数子窗口：每 fclass 的 edge/depth 可调值与显隐开关。
     edge_params: Vec<EdgeParam>,
@@ -91,6 +93,8 @@ impl WaterGuiApp {
             do_edge: false,
             do_hydro: false,
             hydro_with_dem: false,
+            // 默认：编译含 gpu 特性时启用 GPU，否则为 CPU。
+            use_gpu: water_hydro::gpu_compiled(),
             edge_params: edge_settings::default_params(),
             show_edge_settings: false,
             running: false,
@@ -165,6 +169,7 @@ impl WaterGuiApp {
             do_edge: self.do_edge,
             do_hydro: self.do_hydro,
             hydro_with_dem: self.hydro_with_dem,
+            use_gpu: self.use_gpu,
             edge_config: edge_settings::to_config(&self.edge_params),
         };
 
@@ -308,6 +313,16 @@ impl WaterGuiApp {
             });
             ui.add_enabled_ui(self.do_hydro, |ui| {
                 ui.checkbox(&mut self.hydro_with_dem, "hydro 输出含 DEM 底图回填");
+                if water_hydro::gpu_compiled() {
+                    ui.checkbox(&mut self.use_gpu, "使用 GPU 加速 (CUDA)")
+                        .on_hover_text(
+                            "启用 GPU Laplace 求解与 GPU warp 坐标变换（CUDA）。\n\
+                             结果与 CPU 有 ~mm 级浮点差异（非逐位一致）。关闭则全走 CPU。",
+                        );
+                } else {
+                    ui.add_enabled(false, egui::Checkbox::new(&mut false, "使用 GPU 加速 (未编译 CUDA 支持)"))
+                        .on_hover_text("本二进制未编译 gpu 特性；如需 GPU 请以 --features gpu 构建。");
+                }
             });
 
             ui.add_space(12.0);

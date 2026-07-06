@@ -32,6 +32,37 @@ pub mod river_pipeline;
 pub mod skirt;
 pub mod pipeline;
 
+/// 运行时 GPU 开关（仅 `--features gpu` 编译时有效）。默认开；可由 GUI/CLI 运行时切换。
+/// 关闭则 GPU Laplace 与 GPU warp 全走 CPU。env `WATER_HYDRO_USE_GPU=0` 为硬性关闭。
+#[cfg(feature = "gpu")]
+static GPU_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// 设置运行时是否使用 GPU（无 gpu 特性编译时为空操作，恒为 CPU）。
+pub fn set_gpu_enabled(_on: bool) {
+    #[cfg(feature = "gpu")]
+    GPU_ENABLED.store(_on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// 运行时 GPU 是否启用：需 `--features gpu` 编译 + 运行时开关开 + 未被 env 硬关。
+pub fn gpu_enabled() -> bool {
+    #[cfg(feature = "gpu")]
+    {
+        if std::env::var("WATER_HYDRO_USE_GPU").map(|v| v == "0").unwrap_or(false) {
+            return false;
+        }
+        GPU_ENABLED.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    #[cfg(not(feature = "gpu"))]
+    {
+        false
+    }
+}
+
+/// 是否编译进了 GPU 支持（`--features gpu`）。GUI 据此决定是否显示 GPU 选项。
+pub fn gpu_compiled() -> bool {
+    cfg!(feature = "gpu")
+}
+
 /// 水面 DEM 输出组合模式。对应 `WATER_OUTPUT_MODES`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputMode {

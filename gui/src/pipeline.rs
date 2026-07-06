@@ -25,6 +25,8 @@ pub struct PipelineParams {
     pub do_edge: bool,
     pub do_hydro: bool,
     pub hydro_with_dem: bool,
+    /// 是否使用 GPU 加速 hydro（仅 gpu 特性编译时生效）。
+    pub use_gpu: bool,
     /// edge 阶段的每 fclass edge/depth 配置（来自 GUI 子窗口）。
     pub edge_config: EdgeDepthConfig,
 }
@@ -89,6 +91,12 @@ fn execute(p: &PipelineParams, tx: &Sender<GuiEvent>) -> anyhow::Result<Vec<(Str
 
     if p.do_hydro {
         let _ = tx.send(GuiEvent::TaskStart("hydro".to_string()));
+        // 按 GUI 选项设定运行时 GPU 开关（无 gpu 特性编译时为空操作，恒为 CPU）。
+        water_hydro::set_gpu_enabled(p.use_gpu);
+        tracing::info!(
+            "[3] hydro 计算模式：{}",
+            if water_hydro::gpu_enabled() { "GPU (CUDA)" } else { "CPU" }
+        );
         let dem = p
             .dem_path
             .as_ref()

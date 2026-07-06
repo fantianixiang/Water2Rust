@@ -192,6 +192,9 @@ fn invert_affine(t: &[f64; 6]) -> Option<[f64; 6]> {
 fn gpu_warp_applicable(_a: u16, _b: u16) -> bool {
     #[cfg(feature = "gpu")]
     {
+        if !crate::gpu_enabled() {
+            return false;
+        }
         if std::env::var("WATER_HYDRO_GPU_WARP").map(|v| v == "0").unwrap_or(false) {
             return false;
         }

@@ -134,7 +134,7 @@ pub fn solve_laplace_dirichlet(
     #[cfg(feature = "gpu")]
     {
         let n_int = count_interior_vars(poly_mask, dirichlet_mask);
-        if n_int >= GPU_PCG_MIN_VARS {
+        if crate::gpu_enabled() && n_int >= GPU_PCG_MIN_VARS {
             if let Some(gpu_result) =
                 solve_laplace_dirichlet_gpu(poly_mask, dirichlet_mask, dirichlet_z)
             {
