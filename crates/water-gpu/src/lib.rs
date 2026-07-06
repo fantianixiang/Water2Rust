@@ -266,6 +266,155 @@ pub fn laplace_pcg_compact(
     })
 }
 
+extern "C" {
+    /// CUDA 侧 `water_warp_reproject`（cuda/warp.cu）：WGS84↔UTM 逐像元精确变换 + 采样。
+    #[allow(clippy::too_many_arguments)]
+    fn water_warp_reproject(
+        h_src: *const f32,
+        sh: i32,
+        sw: i32,
+        has_nodata: i32,
+        nodata: f32,
+        h_dt: *const f64,
+        h_si: *const f64,
+        dw: i32,
+        dh: i32,
+        dst_is_utm: i32,
+        lon0: f64,
+        k0: f64,
+        a: f64,
+        es: f64,
+        fe: f64,
+        fn_: f64,
+        resampling: i32,
+        h_dst: *mut f32,
+        timing: *mut KernelTiming,
+    ) -> i32;
+}
+
+/// 局地 UTM 带参数（横轴墨卡托）。由 EPSG(32600+zone / 32700+zone) 与 WGS84 椭球导出。
+#[derive(Debug, Clone, Copy)]
+pub struct UtmParams {
+    /// 中央经线（弧度）。
+    pub lon0_rad: f64,
+    /// 尺度因子（UTM 恒为 0.9996）。
+    pub k0: f64,
+    /// 椭球长半轴（WGS84：6378137）。
+    pub a: f64,
+    /// 第一偏心率平方 e²。
+    pub es: f64,
+    /// 东偏（UTM 恒为 500000）。
+    pub fe: f64,
+    /// 北偏（北半球 0、南半球 10000000）。
+    pub false_northing: f64,
+}
+
+impl UtmParams {
+    /// 由 UTM EPSG（326xx 北 / 327xx 南）构造 WGS84 UTM 参数。
+    pub fn from_epsg(epsg: u16) -> Option<Self> {
+        let (north, zone) = match epsg {
+            32601..=32660 => (true, epsg - 32600),
+            32701..=32760 => (false, epsg - 32700),
+            _ => return None,
+        };
+        let lon0_deg = (zone as f64 - 1.0) * 6.0 - 180.0 + 3.0;
+        const A: f64 = 6_378_137.0;
+        const F: f64 = 1.0 / 298.257_223_563;
+        let es = F * (2.0 - F);
+        Some(Self {
+            lon0_rad: lon0_deg.to_radians(),
+            k0: 0.9996,
+            a: A,
+            es,
+            fe: 500_000.0,
+            false_northing: if north { 0.0 } else { 10_000_000.0 },
+        })
+    }
+}
+
+/// GPU 重采样方式。
+#[derive(Debug, Clone, Copy)]
+pub enum GpuResampling {
+    /// 最近邻。
+    Nearest,
+    /// 双线性。
+    Bilinear,
+}
+
+/// GPU 栅格重投影重采样（WGS84 地理 ↔ 局地 UTM）。
+///
+/// 逐输出像元**精确**做地理↔UTM 变换（Snyder 四阶 TM）+ 采样，免 CPU 侧 GDAL 近似
+/// 变换器的逐行 PROJ 细分（原 warp 主瓶颈）。与 CPU `reproject` 采样约定一致（nodata
+/// 门控、containing 像元判定），但坐标变换用 GPU 浮点，故与 proj4rs **非逐位一致**（~mm 级差）。
+///
+/// - `src`：源栅格（`sh×sw` 行主序）；`src_nodata` 无效值门控。
+/// - `dst_transform`：目标像元→目标 CRS 仿射（rasterio 序）。
+/// - `src_inv_transform`：源 CRS 坐标→源像元的**逆仿射**（rasterio 序，调用方预先求逆）。
+/// - `dst_is_utm`：`true` 表示 dst=UTM、src=地理（逆 TM）；`false` 表示 dst=地理、src=UTM（正 TM）。
+/// - `utm`：局地 UTM 带参数。
+#[allow(clippy::too_many_arguments)]
+pub fn warp_reproject(
+    src: &[f32],
+    sh: usize,
+    sw: usize,
+    src_nodata: Option<f32>,
+    dst_transform: [f64; 6],
+    src_inv_transform: [f64; 6],
+    dw: usize,
+    dh: usize,
+    dst_is_utm: bool,
+    utm: &UtmParams,
+    resampling: GpuResampling,
+) -> Result<(Vec<f32>, KernelTiming)> {
+    if src.len() != sh * sw {
+        return Err(GpuError::InvalidInput(format!(
+            "源缓冲长度 {} ≠ sh*sw={}",
+            src.len(),
+            sh * sw
+        )));
+    }
+    let mut dst = vec![f32::NAN; dw * dh];
+    let mut timing = KernelTiming::default();
+    if dw == 0 || dh == 0 || sh == 0 || sw == 0 {
+        return Ok((dst, timing));
+    }
+    let (has_nodata, nodata) = match src_nodata {
+        Some(v) => (1i32, v),
+        None => (0i32, 0.0f32),
+    };
+    let resamp = match resampling {
+        GpuResampling::Nearest => 0i32,
+        GpuResampling::Bilinear => 1i32,
+    };
+    let code = unsafe {
+        water_warp_reproject(
+            src.as_ptr(),
+            sh as i32,
+            sw as i32,
+            has_nodata,
+            nodata,
+            dst_transform.as_ptr(),
+            src_inv_transform.as_ptr(),
+            dw as i32,
+            dh as i32,
+            if dst_is_utm { 1 } else { 0 },
+            utm.lon0_rad,
+            utm.k0,
+            utm.a,
+            utm.es,
+            utm.fe,
+            utm.false_northing,
+            resamp,
+            dst.as_mut_ptr(),
+            &mut timing,
+        )
+    };
+    if code != 0 {
+        return Err(GpuError::Cuda(code));
+    }
+    Ok((dst, timing))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

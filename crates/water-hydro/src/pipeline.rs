@@ -17,7 +17,7 @@ use std::time::Instant;
 
 use water_io::raster::{Dem, DemMeta};
 use water_io::vector::read_vector;
-use water_io::warp::{reproject_masked, reproject_with_max_error, suggested_warp_output, Resampling};
+use water_io::warp::{reproject_masked, suggested_warp_output, Resampling};
 use water_io::geotiff_write::{write_geotiff_f32, write_geotiff_f32_banded};
 use water_core::error::WaterError;
 use water_core::Result;
@@ -169,6 +169,126 @@ fn compute_source_roi(
     Ok((col0 as u32, row0 as u32, (col1 - col0) as u32, (row1 - row0) as u32))
 }
 
+/// 逆仿射（rasterio Affine 序 `[a,b,c,d,e,f]`）：地理 (x,y) → 像素 (col,row)，返回同序。
+#[cfg(feature = "gpu")]
+fn invert_affine(t: &[f64; 6]) -> Option<[f64; 6]> {
+    let det = t[0] * t[4] - t[1] * t[3];
+    if det.abs() < 1e-300 {
+        return None;
+    }
+    Some([
+        t[4] / det,
+        -t[1] / det,
+        (t[1] * t[5] - t[4] * t[2]) / det,
+        -t[3] / det,
+        t[0] / det,
+        (t[3] * t[2] - t[0] * t[5]) / det,
+    ])
+}
+
+/// GPU warp 是否适用（`--features gpu` 且一侧局地 UTM、另一侧 WGS84(4326)）。
+/// 适用时正向 warp 走 GPU 全算，可**跳过 CPU 掩膜构建**（binary_dilation 膨胀）。
+/// env `WATER_HYDRO_GPU_WARP=0` 可关闭 GPU warp（保留 GPU Laplace，用于对拍/回退）。
+fn gpu_warp_applicable(_a: u16, _b: u16) -> bool {
+    #[cfg(feature = "gpu")]
+    {
+        if std::env::var("WATER_HYDRO_GPU_WARP").map(|v| v == "0").unwrap_or(false) {
+            return false;
+        }
+        (water_gpu::UtmParams::from_epsg(_a).is_some() && _b == 4326)
+            || (water_gpu::UtmParams::from_epsg(_b).is_some() && _a == 4326)
+    }
+    #[cfg(not(feature = "gpu"))]
+    {
+        false
+    }
+}
+
+/// warp 分派：`--features gpu` 且为 WGS84(4326)↔局地 UTM 时走 **GPU 逐像元精确变换**
+/// （免 CPU 近似器逐行 PROJ 细分）；否则回退 CPU `reproject_masked`。
+///
+/// GPU 路径**计算整幅** dst（忽略 `mask`）——掩膜本是 CPU 提速手段，GPU 算力足够全算，
+/// 且非水像元不被下游消费；坐标变换用 GPU 浮点，与 proj4rs 非逐位一致（~mm 级差，已获准）。
+#[allow(clippy::too_many_arguments)]
+fn warp_dispatch(
+    src: &Array2<f32>,
+    src_transform: [f64; 6],
+    src_epsg: u16,
+    src_nodata: Option<f64>,
+    dst_transform: [f64; 6],
+    dst_w: usize,
+    dst_h: usize,
+    dst_epsg: u16,
+    resampling: Resampling,
+    mask: Option<&Array2<bool>>,
+) -> Result<Array2<f32>> {
+    #[cfg(feature = "gpu")]
+    {
+        if let Some(res) = try_warp_gpu(
+            src, src_transform, src_epsg, src_nodata, dst_transform, dst_w, dst_h, dst_epsg,
+            resampling,
+        ) {
+            return res;
+        }
+    }
+    reproject_masked(
+        src, src_transform, src_epsg, src_nodata, dst_transform, dst_w, dst_h, dst_epsg,
+        resampling, GDAL_WARP_MAX_ERROR, mask,
+    )
+    .map_err(|e| WaterError::Other(e))
+}
+
+/// GPU warp 尝试：仅当一侧为局地 UTM、另一侧为 WGS84(4326) 时适用，否则 `None`（回退 CPU）。
+#[cfg(feature = "gpu")]
+#[allow(clippy::too_many_arguments)]
+fn try_warp_gpu(
+    src: &Array2<f32>,
+    src_transform: [f64; 6],
+    src_epsg: u16,
+    src_nodata: Option<f64>,
+    dst_transform: [f64; 6],
+    dst_w: usize,
+    dst_h: usize,
+    dst_epsg: u16,
+    resampling: Resampling,
+) -> Option<Result<Array2<f32>>> {
+    use water_gpu::{GpuResampling, UtmParams};
+
+    if !gpu_warp_applicable(src_epsg, dst_epsg) {
+        return None;
+    }
+    // 判定 UTM 侧与方向；另一侧须为 WGS84 地理(4326)。
+    let (dst_is_utm, utm_epsg, geo_epsg) = if UtmParams::from_epsg(dst_epsg).is_some() {
+        (true, dst_epsg, src_epsg)
+    } else if UtmParams::from_epsg(src_epsg).is_some() {
+        (false, src_epsg, dst_epsg)
+    } else {
+        return None;
+    };
+    if geo_epsg != 4326 {
+        return None;
+    }
+    let utm = UtmParams::from_epsg(utm_epsg)?;
+    let src_inv = invert_affine(&src_transform)?;
+    let (sh, sw) = src.dim();
+    let src_std = src.as_standard_layout();
+    let src_slice = src_std.as_slice()?;
+    let resamp = match resampling {
+        Resampling::Nearest => GpuResampling::Nearest,
+        Resampling::Bilinear => GpuResampling::Bilinear,
+    };
+    match water_gpu::warp_reproject(
+        src_slice, sh, sw, src_nodata.map(|v| v as f32), dst_transform, src_inv, dst_w, dst_h,
+        dst_is_utm, &utm, resamp,
+    ) {
+        Ok((v, _timing)) => Some(
+            Array2::from_shape_vec((dst_h, dst_w), v)
+                .map_err(|e| WaterError::Other(anyhow::anyhow!("GPU warp 结果整形失败: {e}"))),
+        ),
+        Err(e) => Some(Err(WaterError::Other(anyhow::anyhow!("GPU warp 失败: {e}")))),
+    }
+}
+
 /// 处理一个 padded 源窗口，返回其 **core（去 padding）子窗口** 的组合结果 `(core_h, core_w)`。
 ///
 /// 流程（对应 Python `_process_water_tile_body` / 非瓦片主路径的算法段）：
@@ -208,35 +328,39 @@ fn process_window(
             "瓦片工作网格 {work_pixels} px 超出预算（瓦片边长应更小）",
         )));
     }
-    // 正向 warp「只算需要部分」：构造工作网格水掩膜（栅格化各多边形 + 膨胀覆盖
-    // solve 边界halo 与裙边读取带 2N），只重投影掩膜内 DEM 像元。**不改变输出网格/变换器
-    // 拟合**（区别于已证伪的 bbox 裁剪），故 compute_water_surface 消费的像元逐位一致；
-    // 掩膜外像元留 NaN，其对应输出走「精确源 DEM 回填」，从不消费 dem_work。
+    // 正向 warp「只算需要部分」（仅 CPU 路径需要）：构造工作网格水掩膜（栅格化各多边形
+    // + 膨胀覆盖 solve 边界 halo 与裙边读取带 2N），只重投影掩膜内 DEM 像元。**不改变输出
+    // 网格/变换器拟合**，故 compute_water_surface 消费的像元逐位一致。GPU warp 全算整幅
+    // （算力足够、掩膜外不被消费），**跳过掩膜构建**（binary_dilation 是 CPU warp 相的主开销）。
     let (wh, ww) = (warp.height as usize, warp.width as usize);
-    let mut work_mask = Array2::<bool>::from_elem((wh, ww), false);
-    for polygon in polys_target {
-        if polygon.exterior().0.is_empty() {
-            continue;
-        }
-        if let Some((r0, c0, lh, lw, win_t)) =
-            window_from_geometry_bounds(polygon, &warp.transform, wh, ww, 2)
-        {
-            let pm = water_io::raster::rasterize_polygon_mask(polygon, &win_t, lw as u32, lh as u32, all_touched);
-            for r in 0..lh {
-                for c in 0..lw {
-                    if pm[(r, c)] {
-                        work_mask[(r0 + r, c0 + c)] = true;
+    let work_mask = if gpu_warp_applicable(src_epsg, target_epsg) {
+        None
+    } else {
+        let mut wm = Array2::<bool>::from_elem((wh, ww), false);
+        for polygon in polys_target {
+            if polygon.exterior().0.is_empty() {
+                continue;
+            }
+            if let Some((r0, c0, lh, lw, win_t)) =
+                window_from_geometry_bounds(polygon, &warp.transform, wh, ww, 2)
+            {
+                let pm = water_io::raster::rasterize_polygon_mask(polygon, &win_t, lw as u32, lh as u32, all_touched);
+                for r in 0..lh {
+                    for c in 0..lw {
+                        if pm[(r, c)] {
+                            wm[(r0 + r, c0 + c)] = true;
+                        }
                     }
                 }
             }
         }
-    }
-    // 膨胀覆盖读取带（4-连通菱形膨胀，半径 = DILATE ≥ 裙边 ramp 2N + halo）。
-    let work_mask = water_core::raster_ops::binary_dilation(&work_mask, HYDRO_WARP_MASK_DILATE);
-    let dem_work = reproject_masked(
+        // 膨胀覆盖读取带（4-连通菱形膨胀，半径 = DILATE ≥ 裙边 ramp 2N + halo）。
+        Some(water_core::raster_ops::binary_dilation(&wm, HYDRO_WARP_MASK_DILATE))
+    };
+    let dem_work = warp_dispatch(
         &dem_src, src_win_t, src_epsg, m.nodata,
-        warp.transform, warp.width, warp.height, target_epsg,
-        Resampling::Bilinear, GDAL_WARP_MAX_ERROR, Some(&work_mask),
+        warp.transform, warp.width as usize, warp.height as usize, target_epsg,
+        Resampling::Bilinear, work_mask.as_ref(),
     )?
     .mapv(|v| v as f64);
     if let Some(a) = acc {
@@ -266,19 +390,18 @@ fn process_window(
     // 先算 mask（nearest，全窗）——compose 只消费 mask_src>=0.5 的像元，故它天然是
     // surf_src 的「需要计算」掩膜。
     let mask_f32 = mask_work.mapv(|b| if b { 1.0f32 } else { 0.0f32 });
-    let mask_src = reproject_with_max_error(
+    let mask_src = warp_dispatch(
         &mask_f32, warp.transform, target_epsg, None,
         src_win_t, pad_w as usize, pad_h as usize, src_epsg,
-        Resampling::Nearest, GDAL_WARP_MAX_ERROR,
+        Resampling::Nearest, None,
     )?;
-    // 掩膜化反向 warp：只计算 mask_src>=0.5 的输出像元（其余留 NaN，compose 不消费）。
-    // 保持整窗变换器不变 → 被计算像元与全量 warp **逐位一致**（见 reproject_masked 文档），
-    // 避免改输出网格带来的亚像素粗差（对比 pipeline-exam/H6 bbox 裁剪失败）。
+    // 反向 warp 水面。CPU 路径用 mask_src>=0.5 掩膜化（只算被 compose 消费的像元，逐位一致）；
+    // GPU 路径整幅精确变换（源 masked_surface 在非水处为 NaN，采样自然得 NaN）。
     let surf_dst_mask = mask_src.mapv(|v| v >= 0.5);
-    let surf_src = reproject_masked(
+    let surf_src = warp_dispatch(
         &masked_surface, warp.transform, target_epsg, None,
         src_win_t, pad_w as usize, pad_h as usize, src_epsg,
-        Resampling::Bilinear, GDAL_WARP_MAX_ERROR, Some(&surf_dst_mask),
+        Resampling::Bilinear, Some(&surf_dst_mask),
     )?;
     if let Some(a) = acc {
         PhaseAcc::add(&a.warp_ns, t);
