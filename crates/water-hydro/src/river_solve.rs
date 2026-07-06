@@ -119,6 +119,7 @@ fn fallback_simple_zlocal(
 ///
 /// `medial_tiebreaker`：skimage medial_axis 的随机置换（对拍用固定种子注入）。
 /// `pixel_m`：像素边长（米），仅回退路径用于水深估计。
+#[allow(unused_assignments)] // 分步计时宏最后一次 mark 的 tk 重赋未读，无害
 pub fn solve_river_polygon_surface(
     poly_mask: &Array2<bool>,
     dem_loc: &Array2<f64>,
@@ -129,7 +130,6 @@ pub fn solve_river_polygon_surface(
     let prof = std::env::var("WATER_HYDRO_PROFILE").map(|v| v == "1").unwrap_or(false);
     let mut tk = std::time::Instant::now();
     let mut marks: Vec<(&str, f64)> = Vec::new();
-    #[allow(unused_assignments)]
     macro_rules! mark {
         ($name:expr) => {
             if prof {
