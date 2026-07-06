@@ -416,6 +416,13 @@ fn run_hydro_pipeline_tiled(
                 tracing::info!("[hydro] 瓦片 {tile_idx}/{total_tiles} 跳过（区域内无水体）");
             } else {
                 // padded 窗口（tile ± pad，clamp 到整幅）。
+                //
+                // 注：曾试「把 core 收紧到水 bbox 只 warp 水区」（~2.6× warp、总 ~11%），但**改变 warp
+                // 输出网格范围 → GDAL 近似变换器(0.125px)拟合变化**，在林芝极端地形（峡谷陡崖，单像素
+                // 高差可达数百米）下，亚像素位移被放大成**最大 437m 的粗差**（0.5% 像元变动、~230 个岸边
+                // 像元 >30m），与 ~11% 加速**不成正比**，已放弃。正解是「保持整窗 warp 变换、只**计算**水
+                // 像元」——同一变换器 → 水像元值逐位一致、跳过 97% 非水像元——需在 eci-gdal 的 reproject
+                // 加输出掩膜支持（子模块改动）。见 pipeline-exam/迭代日志.md。
                 let pcol0 = tcol0.saturating_sub(pad);
                 let prow0 = trow0.saturating_sub(pad);
                 let pcol1 = (tcol0 + tw + pad).min(fw);
