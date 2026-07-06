@@ -129,6 +129,7 @@ pub fn solve_river_polygon_surface(
     let prof = std::env::var("WATER_HYDRO_PROFILE").map(|v| v == "1").unwrap_or(false);
     let mut tk = std::time::Instant::now();
     let mut marks: Vec<(&str, f64)> = Vec::new();
+    #[allow(unused_assignments)]
     macro_rules! mark {
         ($name:expr) => {
             if prof {
