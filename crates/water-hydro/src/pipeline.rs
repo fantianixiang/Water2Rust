@@ -12,6 +12,8 @@ use geo::BoundingRect;
 use geo_types::{Geometry, Polygon};
 use ndarray::Array2;
 use rayon::prelude::*;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 
 use water_io::raster::{Dem, DemMeta};
 use water_io::vector::read_vector;
@@ -39,6 +41,26 @@ const HYDRO_TILED_TILE_SIZE: u32 = 8192;
 const HYDRO_TILED_PAD_PX: u32 = 64;
 /// 瓦片级并行线程数（保持全分辨率，仅瓦片之间并行；faer 求解内部为 `Par::Seq`，不嵌套竞争）。
 const HYDRO_TILE_WORKERS: usize = 4;
+
+/// 分阶段耗时累加器（纳秒；供瓦片路径 profile，env `WATER_HYDRO_PROFILE=1` 打印）。
+/// 瓦片内各阶段跨 4 线程累加，故其和 > 墙钟；用于看**相对占比**。
+#[derive(Default)]
+struct PhaseAcc {
+    read_ns: AtomicU64,    // 读 padded 源 DEM 窗口
+    warp_ns: AtomicU64,    // warp 正/反投影（3 次/瓦片）
+    solve_ns: AtomicU64,   // compute_water_surface（栅格化 + Laplace 解）
+    compose_ns: AtomicU64, // 掩膜/组合数组构造
+}
+impl PhaseAcc {
+    #[inline]
+    fn add(field: &AtomicU64, t: Instant) {
+        field.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    }
+}
+/// profile 开关（env `WATER_HYDRO_PROFILE=1`）。
+fn profile_on() -> bool {
+    std::env::var("WATER_HYDRO_PROFILE").map(|v| v == "1").unwrap_or(false)
+}
 
 /// 从要素集合抽取多边形 + fclass（对应 Python `_extract_polygons` 展开顺序）。
 ///
@@ -145,14 +167,20 @@ fn process_window(
     output_mode: OutputMode,
     pad: (u32, u32, u32, u32),  // (col0, row0, w, h)
     core: (u32, u32, u32, u32), // (col0, row0, w, h)，须为 pad 的子窗口
+    acc: Option<&PhaseAcc>,
 ) -> Result<Array2<f32>> {
     let (pad_col0, pad_row0, pad_w, pad_h) = pad;
     let (core_col0, core_row0, core_w, core_h) = core;
 
     // 读 padded 原始 DEM（源网格，不重采样）。
+    let t = Instant::now();
     let (dem_src, src_win_t) = dem.read_window_f32(pad_col0, pad_row0, pad_w, pad_h)?;
+    if let Some(a) = acc {
+        PhaseAcc::add(&a.read_ns, t);
+    }
 
     // warp 到工作网格。
+    let t = Instant::now();
     let warp = suggested_warp_output(src_epsg, target_epsg, src_win_t, pad_w as usize, pad_h as usize)?;
     let work_pixels = warp.width as u64 * warp.height as u64;
     if work_pixels > HYDRO_MAX_FULL_RASTER_PIXELS {
@@ -166,18 +194,30 @@ fn process_window(
         Resampling::Bilinear, GDAL_WARP_MAX_ERROR,
     )?
     .mapv(|v| v as f64);
+    if let Some(a) = acc {
+        PhaseAcc::add(&a.warp_ns, t);
+    }
 
     // 工作网格水面 + 写入掩膜（含裙边）。
+    let t = Instant::now();
     let (surface_work, mask_work) = compute_water_surface(
         &warp.transform, &dem_work, polys_target, fclass,
         all_touched, HYDRO_WATER_SKIRT_PIXELS,
         |_idx, n| (0..n).collect::<Vec<usize>>(),
     );
+    if let Some(a) = acc {
+        PhaseAcc::add(&a.solve_ns, t);
+    }
 
     // 只把水面 + 掩膜投回 padded 源窗口（方案 B）。
+    let t = Instant::now();
     let masked_surface = Array2::from_shape_fn(surface_work.dim(), |(r, c)| {
         if mask_work[(r, c)] { surface_work[(r, c)] } else { f32::NAN }
     });
+    if let Some(a) = acc {
+        PhaseAcc::add(&a.compose_ns, t);
+    }
+    let t = Instant::now();
     let surf_src = reproject_with_max_error(
         &masked_surface, warp.transform, target_epsg, None,
         src_win_t, pad_w as usize, pad_h as usize, src_epsg,
@@ -189,8 +229,12 @@ fn process_window(
         src_win_t, pad_w as usize, pad_h as usize, src_epsg,
         Resampling::Nearest, GDAL_WARP_MAX_ERROR,
     )?;
+    if let Some(a) = acc {
+        PhaseAcc::add(&a.warp_ns, t);
+    }
 
     // 提取 core：与精确源 DEM 组合。
+    let t = Instant::now();
     let with_dem = matches!(output_mode, OutputMode::WaterSurfaceWithDem);
     let dr = (core_row0 - pad_row0) as usize;
     let dc = (core_col0 - pad_col0) as usize;
@@ -205,6 +249,9 @@ fn process_window(
             OUTPUT_NODATA as f32
         }
     });
+    if let Some(a) = acc {
+        PhaseAcc::add(&a.compose_ns, t);
+    }
     Ok(core_arr)
 }
 
@@ -265,6 +312,7 @@ pub fn run_hydro_pipeline(job: &HydroJob) -> Result<()> {
         &dem, &m, src_epsg, target_epsg, &polys_target, &fclass,
         job.all_touched, job.output_mode,
         (col0, row0, ww, hh), (col0, row0, ww, hh),
+        None,
     )?;
     let is_geo = proj_from_epsg(src_epsg)?.is_latlong();
     write_geotiff_f32(&job.output_path, &core, roi_win_t, src_epsg, is_geo, Some(OUTPUT_NODATA))?;
@@ -303,8 +351,10 @@ fn run_hydro_pipeline_tiled(
     let full_t = [m.pixel_size_x, 0.0, m.min_x, 0.0, -m.pixel_size_y, m.max_y];
     let (fw, fh) = (m.width, m.height);
     let with_dem = matches!(job.output_mode, OutputMode::WaterSurfaceWithDem);
+    let prof = profile_on();
 
     // 全幅输出：with_dem 用整幅精确源 DEM 铺底；only 用 nodata。
+    let t_base = Instant::now();
     let mut out: Array2<f32> = if with_dem {
         let (mut full_dem, _t) = dem.read_window_f32(0, 0, fw, fh)?;
         full_dem.mapv_inplace(|v| if v.is_finite() { v } else { OUTPUT_NODATA as f32 });
@@ -312,6 +362,9 @@ fn run_hydro_pipeline_tiled(
     } else {
         Array2::from_elem((fh as usize, fw as usize), OUTPUT_NODATA as f32)
     };
+    if prof {
+        tracing::info!("[profile] 全幅铺底读入 {:.2}s（{fw}×{fh}）", t_base.elapsed().as_secs_f64());
+    }
 
     // 各源多边形 bbox（源 CRS 坐标），用于瓦片重叠判定。
     let src_bboxes: Vec<[f64; 4]> = polys_src
@@ -376,12 +429,15 @@ fn run_hydro_pipeline_tiled(
         .build()
         .map_err(|err| WaterError::Other(anyhow::anyhow!("rayon 线程池构建失败: {err}")))?;
     let done = std::sync::atomic::AtomicU32::new(0);
+    let acc = PhaseAcc::default();
+    let t_tiles = Instant::now();
     let results: Vec<(Win, Array2<f32>)> = pool.install(|| {
         jobs.par_iter()
             .map(|&(pad_win, core_win)| {
                 let core = process_window(
                     dem, m, src_epsg, target_epsg, polys_target, fclass,
                     job.all_touched, job.output_mode, pad_win, core_win,
+                    if prof { Some(&acc) } else { None },
                 )?;
                 let k = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                 tracing::info!("[hydro] 含水瓦片 {k}/{n_water} 完成");
@@ -389,8 +445,19 @@ fn run_hydro_pipeline_tiled(
             })
             .collect::<Result<Vec<_>>>()
     })?;
+    if prof {
+        tracing::info!(
+            "[profile] 瓦片处理 {:.2}s（墙钟）| 分项累加(跨{HYDRO_TILE_WORKERS}线程): 读={:.2}s warp={:.2}s 解算={:.2}s 组合={:.2}s",
+            t_tiles.elapsed().as_secs_f64(),
+            acc.read_ns.load(Ordering::Relaxed) as f64 / 1e9,
+            acc.warp_ns.load(Ordering::Relaxed) as f64 / 1e9,
+            acc.solve_ns.load(Ordering::Relaxed) as f64 / 1e9,
+            acc.compose_ns.load(Ordering::Relaxed) as f64 / 1e9,
+        );
+    }
 
     // ── 顺序写回全幅输出（各 core 区互不重叠，与串行逐位一致）──
+    let t_asm = Instant::now();
     for ((tcol0, trow0, tw, th), core) in results {
         for r in 0..th as usize {
             for c in 0..tw as usize {
@@ -401,9 +468,16 @@ fn run_hydro_pipeline_tiled(
     tracing::info!(
         "[hydro] 全部 {total_tiles} 个瓦片处理完成（含水 {n_water}，无水 {n_dry}），输出 {fh}×{fw}"
     );
+    if prof {
+        tracing::info!("[profile] 写回全幅 {:.2}s", t_asm.elapsed().as_secs_f64());
+    }
 
     let is_geo = proj_from_epsg(src_epsg)?.is_latlong();
+    let t_write = Instant::now();
     write_geotiff_f32(&job.output_path, &out, full_t, src_epsg, is_geo, Some(OUTPUT_NODATA))?;
+    if prof {
+        tracing::info!("[profile] 输出写盘 {:.2}s", t_write.elapsed().as_secs_f64());
+    }
     Ok(())
 }
 

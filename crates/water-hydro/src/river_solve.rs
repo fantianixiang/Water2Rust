@@ -126,9 +126,23 @@ pub fn solve_river_polygon_surface(
     pixel_m: f64,
 ) -> Array2<f64> {
     let (lh, lw) = poly_mask.dim();
+    let prof = std::env::var("WATER_HYDRO_PROFILE").map(|v| v == "1").unwrap_or(false);
+    let mut tk = std::time::Instant::now();
+    let mut marks: Vec<(&str, f64)> = Vec::new();
+    macro_rules! mark {
+        ($name:expr) => {
+            if prof {
+                marks.push(($name, tk.elapsed().as_secs_f64()));
+                tk = std::time::Instant::now();
+            }
+        };
+    }
     let skeleton = medial_axis(poly_mask, medial_tiebreaker);
+    mark!("medial_axis");
     let corr_edt = distance_transform_edt(poly_mask).distances;
+    mark!("edt");
     let ordered = order_skeleton_pixels_along_flow(&skeleton, dem_loc);
+    mark!("order_flow");
 
     if ordered.len() < 5 {
         return fallback_simple_zlocal(poly_mask, dem_loc, &skeleton, &corr_edt, pixel_m);
@@ -148,6 +162,7 @@ pub fn solve_river_polygon_surface(
 
     let tangents = compute_skeleton_tangents(&smoothed_px, 3);
     let is_junction = detect_junction_stations(&smoothed_px, &tangents, 4.0, 0.5);
+    mark!("tangent+junction");
 
     // 岸线环 = 多边形边缘一像素环。
     let eroded = binary_erosion(poly_mask, 1);
@@ -157,6 +172,7 @@ pub fn solve_river_polygon_surface(
             boundary_mask[(r, c)] = poly_mask[(r, c)] && !eroded[(r, c)];
         }
     }
+    mark!("boundary");
 
     // 各站半宽 = 最近骨架像素的 EDT（下限 2）。
     let skel_rc: Vec<(usize, usize)> = skeleton
@@ -165,6 +181,7 @@ pub fn solve_river_polygon_surface(
         .map(|((r, c), _)| (r, c))
         .collect();
     let edt_at_skel = nearest_skeleton_edt(&smoothed, &skel_rc, &corr_edt);
+    mark!("nearest_skel_edt");
 
     // 横断面 bank z（boundary-only + EDT 截断）。
     let params = CrossSectionParams {
@@ -174,6 +191,7 @@ pub fn solve_river_polygon_surface(
         edt_half_widths: Some(&edt_at_skel),
     };
     let xs = cross_section_z_at_skeleton_pixels(&smoothed_px, &tangents, &boundary_mask, dem_loc, &params);
+    mark!("cross_section");
 
     // 多峰等渗 + ffill/bfill。
     let mut z_smooth = isotonic_multi_peak(&xs.z_cross);
@@ -183,11 +201,13 @@ pub fn solve_river_polygon_surface(
     }
 
     spatial_p30_clamp(&mut z_smooth, &smoothed, lh, lw, &corr_edt, &skeleton);
+    mark!("p30_clamp");
     mask_aware_spatial_gauss_clamp(&mut z_smooth, &smoothed, lh, lw);
+    mark!("gauss_clamp");
 
     let (dir_mask, dir_z) = build_dirichlet(&smoothed, &z_smooth, &is_junction, poly_mask);
     let n_dir = dir_mask.iter().filter(|&&b| b).count();
-    if n_dir == 0 {
+    let out = if n_dir == 0 {
         let mean = nanmean(&z_smooth);
         let mut z_local = Array2::<f64>::from_elem((lh, lw), f64::NAN);
         for r in 0..lh {
@@ -200,5 +220,19 @@ pub fn solve_river_polygon_surface(
         z_local
     } else {
         solve_laplace_dirichlet(poly_mask, &dir_mask, &dir_z)
+    };
+    mark!("laplace");
+    if prof {
+        let total: f64 = marks.iter().map(|(_, t)| t).sum();
+        if total > 1.0 {
+            let detail: String = marks
+                .iter()
+                .map(|(n, t)| format!("{n}={t:.2}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            eprintln!("[profile] river_solve {lh}x{lw} 站点={} 骨架={}: {detail} | 合计={total:.2}s",
+                smoothed.len(), skel_rc.len());
+        }
     }
+    out
 }

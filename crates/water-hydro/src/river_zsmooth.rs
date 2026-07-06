@@ -4,7 +4,7 @@
 
 use ndarray::Array2;
 
-use water_core::rank_filter::percentile_filter_2d;
+use water_core::rank_filter::percentile_filter_2d_at;
 use water_core::raster_ops::{gaussian_smooth, gaussian_smooth_f32};
 
 use crate::cross_section::py_round;
@@ -85,10 +85,15 @@ pub(crate) fn spatial_p30_clamp(
             zf_for_pct[(sr, sc)] = z_smooth[k];
         }
     }
-    let zf_low = percentile_filter_2d(&zf_for_pct, 30.0, pct_size);
+    // 仅在站点像素计算 P30 秩滤波（全网格结果只在站点被读取；与全网格版逐位一致）。
+    let station_pts: Vec<(usize, usize)> = smoothed
+        .iter()
+        .map(|&(sr, sc)| (sr.min(lh.saturating_sub(1)), sc.min(lw.saturating_sub(1))))
+        .collect();
+    let zf_low_at = percentile_filter_2d_at(&zf_for_pct, 30.0, pct_size, &station_pts);
     for (k, &(sr, sc)) in smoothed.iter().enumerate() {
         if sr < lh && sc < lw {
-            let v = zf_low[(sr, sc)];
+            let v = zf_low_at[k];
             if v.is_finite() && v < f64::INFINITY && z_smooth[k].is_finite() {
                 z_smooth[k] = z_smooth[k].min(v);
             }

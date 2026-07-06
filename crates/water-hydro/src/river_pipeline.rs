@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use geo::BoundingRect;
 use geo_types::Polygon;
 use ndarray::Array2;
+use rayon::prelude::*;
 
 use water_io::raster::rasterize_polygon_mask;
 
@@ -77,44 +78,61 @@ pub fn solve_laplace_per_polygon<F>(
     tiebreaker_for: F,
 ) -> Array2<f32>
 where
-    F: Fn(usize, usize) -> Vec<usize>,
+    F: Fn(usize, usize) -> Vec<usize> + Sync,
 {
-    let mut surface = Array2::<f32>::from_elem((height, width), f32::NAN);
-
-    for (idx, polygon) in water_polygons.iter().enumerate() {
-        if polygon.exterior().0.is_empty() {
-            continue;
-        }
-        let fclass = water_fclass.get(idx).and_then(|o| o.as_deref());
-        if is_lake_fclass(fclass) {
-            continue;
-        }
-        let Some((r0, c0, lh, lw, win_t)) =
-            window_from_geometry_bounds(polygon, transform, height, width, 2)
-        else {
-            continue;
-        };
-
-        let mut dem_loc = Array2::<f64>::zeros((lh, lw));
-        for r in 0..lh {
-            for c in 0..lw {
-                dem_loc[(r, c)] = dem[(r0 + r, c0 + c)];
+    // 逐多边形求解**并行化**：各多边形独立（窗口裁剪 + 栅格化 + 河流几何/求解），
+    // 并行产出各自「盖印子块」；随后按多边形序**串行缝合**到全局面——重叠区后者覆盖，
+    // 与原串行逐位一致。tiebreaker 闭包须 Sync。faer 内部为 Par::Seq，不与外层 rayon 竞争。
+    let stamped: Vec<Option<(usize, usize, Array2<f32>)>> = water_polygons
+        .par_iter()
+        .enumerate()
+        .map(|(idx, polygon)| {
+            if polygon.exterior().0.is_empty() {
+                return None;
             }
-        }
-        let poly_mask = rasterize_polygon_mask(polygon, &win_t, lw as u32, lh as u32, all_touched);
-        let n = poly_mask.iter().filter(|&&b| b).count();
-        if n == 0 {
-            continue;
-        }
-        let tb = tiebreaker_for(idx, n);
-        let pixel_m = win_t[0].abs();
-        let z_local = solve_river_polygon_surface(&poly_mask, &dem_loc, &tb, pixel_m);
+            let fclass = water_fclass.get(idx).and_then(|o| o.as_deref());
+            if is_lake_fclass(fclass) {
+                return None;
+            }
+            let (r0, c0, lh, lw, win_t) =
+                window_from_geometry_bounds(polygon, transform, height, width, 2)?;
 
-        // 直接盖印：poly_mask ∩ 有限 z_local → surface。
+            let mut dem_loc = Array2::<f64>::zeros((lh, lw));
+            for r in 0..lh {
+                for c in 0..lw {
+                    dem_loc[(r, c)] = dem[(r0 + r, c0 + c)];
+                }
+            }
+            let poly_mask = rasterize_polygon_mask(polygon, &win_t, lw as u32, lh as u32, all_touched);
+            let n = poly_mask.iter().filter(|&&b| b).count();
+            if n == 0 {
+                return None;
+            }
+            let tb = tiebreaker_for(idx, n);
+            let pixel_m = win_t[0].abs();
+            let z_local = solve_river_polygon_surface(&poly_mask, &dem_loc, &tb, pixel_m);
+
+            // 盖印子块：poly_mask ∩ 有限 z_local → z(f32)，否则 NaN。
+            let stamp = Array2::from_shape_fn((lh, lw), |(r, c)| {
+                if poly_mask[(r, c)] && z_local[(r, c)].is_finite() {
+                    z_local[(r, c)] as f32
+                } else {
+                    f32::NAN
+                }
+            });
+            Some((r0, c0, stamp))
+        })
+        .collect();
+
+    // 串行缝合（多边形序；重叠区后者覆盖，与原串行盖印逐位一致）。
+    let mut surface = Array2::<f32>::from_elem((height, width), f32::NAN);
+    for (r0, c0, stamp) in stamped.into_iter().flatten() {
+        let (lh, lw) = stamp.dim();
         for r in 0..lh {
             for c in 0..lw {
-                if poly_mask[(r, c)] && z_local[(r, c)].is_finite() {
-                    surface[(r0 + r, c0 + c)] = z_local[(r, c)] as f32;
+                let v = stamp[(r, c)];
+                if v.is_finite() {
+                    surface[(r0 + r, c0 + c)] = v;
                 }
             }
         }
@@ -140,9 +158,11 @@ pub fn compute_water_surface<F>(
     tiebreaker_for: F,
 ) -> (Array2<f32>, Array2<bool>)
 where
-    F: Fn(usize, usize) -> Vec<usize>,
+    F: Fn(usize, usize) -> Vec<usize> + Sync,
 {
     let (height, width) = dem.dim();
+    let prof = std::env::var("WATER_HYDRO_PROFILE").map(|v| v == "1").unwrap_or(false);
+    let tk = std::time::Instant::now();
 
     // 1) 河流水面（f32，湖泊为 NaN）。
     let mut surface = solve_laplace_per_polygon(
@@ -155,6 +175,8 @@ where
         all_touched,
         tiebreaker_for,
     );
+    let t1 = tk.elapsed().as_secs_f64();
+    let tk = std::time::Instant::now();
 
     // 2) 湖泊压平（就地填入常数水位）。
     let dem_f32 = dem.mapv(|v| v as f32);
@@ -167,6 +189,8 @@ where
         all_touched,
         None,
     );
+    let t2 = tk.elapsed().as_secs_f64();
+    let tk = std::time::Instant::now();
 
     // 3) 河流 / 湖泊掩膜（用于河床抬升与组合）。
     let mut river_mask = Array2::<bool>::default((height, width));
@@ -196,6 +220,8 @@ where
             }
         }
     }
+    let t3 = tk.elapsed().as_secs_f64();
+    let tk = std::time::Instant::now();
 
     // 4) 水面写入掩膜（有限水面像素）。
     let write_mask = surface.mapv(|s| s.is_finite());
@@ -206,6 +232,12 @@ where
     // 6) 输出裙边（内 N 平铺水位、外 N 过渡到 DEM，掩膜外扩至 2N）。`skirt_pixels=0` 时为恒等。
     let mut output_mask = write_mask.clone();
     apply_water_surface_skirt(&mut surface, &mut output_mask, &dem_f32, skirt_pixels);
+    if prof {
+        eprintln!(
+            "[profile] compute_water_surface {height}x{width}: laplace解算={t1:.2}s 湖泊压平={t2:.2}s 掩膜栅格化={t3:.2}s 抬升+裙边={:.2}s",
+            tk.elapsed().as_secs_f64()
+        );
+    }
 
     // 返回工作网格水面 + 写入掩膜（组合交给调用方，在源网格上用精确源 DEM）。
     (surface, output_mask)

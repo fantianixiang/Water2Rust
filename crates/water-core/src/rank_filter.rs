@@ -86,6 +86,41 @@ pub fn percentile_filter_2d(data: &Array2<f64>, percentile: f64, size: usize) ->
     rank_filter_2d(data, size, rank)
 }
 
+/// 二维百分位秩滤波**仅在给定查询点**计算（其余像素不算）。
+///
+/// 返回 `points` 各点的滤波值，与 [`percentile_filter_2d`] 在这些点**逐位一致**
+/// （同一 reflect 边界、同一窗口填充顺序、同一 `NI_Select`）。用于稀疏场景
+/// （如河流骨架站点）——只需少量点的结果时避免全网格 O(h·w·size²) 无用功。
+pub fn percentile_filter_2d_at(
+    data: &Array2<f64>,
+    percentile: f64,
+    size: usize,
+    points: &[(usize, usize)],
+) -> Vec<f64> {
+    assert!(size >= 1, "size 必须 ≥ 1");
+    let fs = size * size;
+    let rank = percentile_rank(fs, percentile);
+    let (h, w) = data.dim();
+    let s = size as i64;
+    let lo = -(s / 2);
+    let hi = s - 1 - s / 2;
+    let mut out = vec![0.0f64; points.len()];
+    let mut buf: Vec<f64> = Vec::with_capacity(size * size);
+    for (i, &(r, c)) in points.iter().enumerate() {
+        buf.clear();
+        for dr in lo..=hi {
+            let rr = reflect_index(r as i64 + dr, h as i64);
+            for dc in lo..=hi {
+                let cc = reflect_index(c as i64 + dc, w as i64);
+                buf.push(data[(rr, cc)]);
+            }
+        }
+        let n = buf.len() as isize;
+        out[i] = ni_select(&mut buf, 0, n - 1, rank as isize);
+    }
+    out
+}
+
 /// 二维秩滤波核：每个像素取方框窗口内第 `rank` 小的值（NI_Select）。
 fn rank_filter_2d(data: &Array2<f64>, size: usize, rank: usize) -> Array2<f64> {
     let (h, w) = data.dim();
@@ -133,5 +168,38 @@ pub fn median_filter_1d(data: &[f64], size: usize) -> Vec<f64> {
         out[i] = ni_select(&mut buf, 0, m - 1, rank as isize);
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `percentile_filter_2d_at` 在任意查询点与全网格 `percentile_filter_2d` 逐位一致。
+    #[test]
+    fn point_restricted_matches_full() {
+        let (h, w) = (37usize, 29usize);
+        // 稀疏 +inf 场（模拟骨架 z），少数格填有限值。
+        let mut data = Array2::<f64>::from_elem((h, w), f64::INFINITY);
+        for k in 0..123usize {
+            let r = (k * 7 + 3) % h;
+            let c = (k * 13 + 5) % w;
+            data[(r, c)] = ((k * 31 % 97) as f64) - 40.0;
+        }
+        let pts: Vec<(usize, usize)> = (0..h * w)
+            .map(|i| (i / w, i % w))
+            .filter(|&(r, c)| (r + 2 * c) % 3 == 0)
+            .collect();
+        for &size in &[3usize, 7, 11] {
+            let full = percentile_filter_2d(&data, 30.0, size);
+            let at = percentile_filter_2d_at(&data, 30.0, size, &pts);
+            for (i, &(r, c)) in pts.iter().enumerate() {
+                assert_eq!(
+                    full[(r, c)].to_bits(),
+                    at[i].to_bits(),
+                    "size={size} 点({r},{c}) 不一致"
+                );
+            }
+        }
+    }
 }
 
