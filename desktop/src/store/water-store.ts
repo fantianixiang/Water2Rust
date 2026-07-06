@@ -27,6 +27,10 @@ interface WaterState {
   doEdge: boolean;
   doHydro: boolean;
   hydroWithDem: boolean;
+  /** 是否使用 GPU 加速 hydro（仅 GPU 版可用）。 */
+  useGpu: boolean;
+  /** 后端是否编译进 GPU 支持（决定复选框是否可用）。 */
+  gpuAvailable: boolean;
 
   running: boolean;
   startedAt: number | null;
@@ -65,6 +69,8 @@ export const useWaterStore = create<WaterState>((set, get) => ({
   doEdge: false,
   doHydro: false,
   hydroWithDem: false,
+  useGpu: true,
+  gpuAvailable: false,
 
   running: false,
   startedAt: null,

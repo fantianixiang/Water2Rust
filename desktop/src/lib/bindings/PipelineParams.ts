@@ -4,4 +4,4 @@ import type { EdgeOverride } from "./EdgeOverride";
 /**
  * 一次运行的全部参数（前端 camelCase → serde rename）。
  */
-export type PipelineParams = { waterPath: string, outputPath: string, demPath: string | null, referencePath: string, doFclass: boolean, doEdge: boolean, doHydro: boolean, hydroWithDem: boolean, edgeOverrides: Array<EdgeOverride>, };
+export type PipelineParams = { waterPath: string, outputPath: string, demPath: string | null, referencePath: string, doFclass: boolean, doEdge: boolean, doHydro: boolean, hydroWithDem: boolean, useGpu: boolean, edgeOverrides: Array<EdgeOverride>, };

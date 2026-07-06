@@ -45,3 +45,9 @@ pub fn get_edge_guidance() -> Vec<EdgeGuidanceItem> {
 pub fn greet(name: &str) -> String {
     format!("你好，{name}！Water2Rust 纯 Rust 后端已就绪。")
 }
+
+/// 是否编译进了 GPU（CUDA）支持——前端据此显示/启用「使用 GPU」开关。
+#[tauri::command]
+pub fn gpu_available() -> bool {
+    water_hydro::gpu_compiled()
+}

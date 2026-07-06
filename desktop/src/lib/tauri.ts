@@ -23,6 +23,11 @@ export function runPipeline(params: PipelineParams): Promise<void> {
   return invoke("run_pipeline", { params });
 }
 
+/** 后端是否编译进了 GPU（CUDA）支持。 */
+export function gpuAvailable(): Promise<boolean> {
+  return invoke<boolean>("gpu_available");
+}
+
 // ── 事件订阅 ─────────────────────────────────────────────
 export function onLog(cb: (line: string) => void): Promise<UnlistenFn> {
   return listen<string>("pipeline://log", (e) => cb(e.payload));

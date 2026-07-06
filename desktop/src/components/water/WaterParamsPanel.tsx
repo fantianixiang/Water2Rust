@@ -1,8 +1,10 @@
 import { ListTodo, Play, Settings, SlidersHorizontal } from "lucide-react";
+import { useEffect } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
+  gpuAvailable,
   pickFile,
   pickSave,
   runPipeline,
@@ -21,8 +23,17 @@ export function WaterParamsPanel() {
   const doEdge = useWaterStore((s) => s.doEdge);
   const doHydro = useWaterStore((s) => s.doHydro);
   const hydroWithDem = useWaterStore((s) => s.hydroWithDem);
+  const useGpu = useWaterStore((s) => s.useGpu);
+  const gpuOk = useWaterStore((s) => s.gpuAvailable);
   const running = useWaterStore((s) => s.running);
   const set = useWaterStore((s) => s.set);
+
+  // 挂载时查后端是否编译进 GPU 支持，决定「使用 GPU」开关是否可用。
+  useEffect(() => {
+    gpuAvailable()
+      .then((ok) => set({ gpuAvailable: ok, useGpu: ok }))
+      .catch(() => set({ gpuAvailable: false, useGpu: false }));
+  }, [set]);
 
   const run = async () => {
     const s = useWaterStore.getState();
@@ -42,6 +53,7 @@ export function WaterParamsPanel() {
       doEdge: s.doEdge,
       doHydro: s.doHydro,
       hydroWithDem: s.hydroWithDem,
+      useGpu: s.useGpu,
       edgeOverrides: s.edgeParams.map((p) => ({
         fclass: p.fclass,
         edge: p.edge,
@@ -143,6 +155,22 @@ export function WaterParamsPanel() {
             onCheckedChange={(v) => set({ hydroWithDem: !!v })}
           />
           hydro 输出含 DEM 底图回填
+        </label>
+
+        <label
+          className={`mt-2 flex items-center gap-2 text-sm ${doHydro && gpuOk ? "" : "opacity-50"}`}
+          title={
+            gpuOk
+              ? "启用 GPU（CUDA）加速 Laplace 求解与坐标变换；与 CPU 有 ~mm 级浮点差异。"
+              : "本版本未编译 GPU 支持（需以 --features gpu 构建），恒为 CPU。"
+          }
+        >
+          <Checkbox
+            checked={useGpu && gpuOk}
+            disabled={!doHydro || !gpuOk}
+            onCheckedChange={(v) => set({ useGpu: !!v })}
+          />
+          使用 GPU 加速 (CUDA)
         </label>
       </div>
 

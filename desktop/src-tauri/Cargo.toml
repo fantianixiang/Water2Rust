@@ -13,6 +13,10 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+[features]
+# 编译 GPU 加速（CUDA）。以 --features gpu 构建可在界面切换 CPU/GPU。
+gpu = ["water-hydro/gpu"]
+
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"

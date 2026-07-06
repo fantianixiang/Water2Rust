@@ -35,6 +35,8 @@ pub struct PipelineParams {
     pub do_edge: bool,
     pub do_hydro: bool,
     pub hydro_with_dem: bool,
+    /// 是否使用 GPU 加速 hydro（仅 gpu 特性编译时生效；否则恒为 CPU）。
+    pub use_gpu: bool,
     pub edge_overrides: Vec<EdgeOverride>,
 }
 
@@ -138,7 +140,13 @@ fn execute(app: &AppHandle, p: &PipelineParams) -> anyhow::Result<Vec<TaskOutput
         } else {
             OutputMode::WaterSurfaceOnly
         };
-        tracing::info!("[3] hydro 水面 DEM：{} + {} → {}", dem.display(), classified.display(), out.display());
+        // 按界面选项设定运行时 GPU 开关（无 gpu 特性编译时为空操作，恒为 CPU）。
+        water_hydro::set_gpu_enabled(p.use_gpu);
+        tracing::info!(
+            "[3] hydro 水面 DEM（{}）：{} + {} → {}",
+            if water_hydro::gpu_enabled() { "GPU" } else { "CPU" },
+            dem.display(), classified.display(), out.display()
+        );
         water_hydro::run(&dem, &classified, &out, mode)?;
         outputs.push(TaskOutput { task: "hydro".into(), path: out.display().to_string() });
         done("hydro");

@@ -25,6 +25,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::greet,
             commands::get_edge_guidance,
+            commands::gpu_available,
             pipeline::run_pipeline,
         ])
         .run(tauri::generate_context!())
