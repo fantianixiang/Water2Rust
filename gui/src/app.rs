@@ -242,7 +242,9 @@ impl eframe::App for WaterGuiApp {
 
 impl WaterGuiApp {
     fn params_ui(&mut self, ui: &mut egui::Ui) {
-        egui::ScrollArea::vertical().show(ui, |ui| {
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
             ui.add_space(8.0);
             ui.label(RichText::new("参数设置").size(16.0).strong());
             ui.add_space(6.0);

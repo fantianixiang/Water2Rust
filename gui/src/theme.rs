@@ -17,7 +17,16 @@ pub const BORDER: Color32 = Color32::from_rgb(0xE5, 0xE7, 0xEB);
 
 /// 安装中文字体（Windows 常见字体，优先微软雅黑），避免中文显示为方块。
 pub fn install_cjk_font(ctx: &egui::Context) {
-    const CANDIDATES: [&str; 4] = [
+    const CANDIDATES: [&str; 10] = [
+        // Linux 原生 CJK 字体（优先，最稳）。
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf",
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+        // WSL 下挂载的 Windows 字体。
+        "/mnt/c/Windows/Fonts/msyh.ttc",
+        "/mnt/c/Windows/Fonts/simhei.ttf",
+        // 原生 Windows 路径（Windows 上直接运行时）。
         "C:/Windows/Fonts/msyh.ttc",   // 微软雅黑
         "C:/Windows/Fonts/msyh.ttf",
         "C:/Windows/Fonts/simhei.ttf", // 黑体
