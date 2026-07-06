@@ -31,3 +31,6 @@ eci-gdal-contrib/
 
 # 第三方 GPU 库（cuDSS 等，本地安装，不入库）
 /third_party/
+
+# Nsight Systems 报告（大二进制，仅本地留存，不入库）
+/nsys-reports/

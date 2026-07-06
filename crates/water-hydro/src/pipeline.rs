@@ -39,8 +39,19 @@ const OUTPUT_NODATA: f64 = -9999.0;
 const HYDRO_TILED_TILE_SIZE: u32 = 8192;
 /// 瓦片 padding（源像素）。Python `max(HYDRO_TILED_SURFACE_PADDING_PX, 64)`。
 const HYDRO_TILED_PAD_PX: u32 = 64;
-/// 瓦片级并行线程数（保持全分辨率，仅瓦片之间并行；faer 求解内部为 `Par::Seq`，不嵌套竞争）。
-const HYDRO_TILE_WORKERS: usize = 4;
+/// 瓦片级并行线程数上限（保持全分辨率，仅瓦片之间并行；faer 内部 `Par::Seq`，不嵌套竞争）。
+/// 峰值内存 ~ 并发瓦片数 × 单瓦片(~3GB)；24 核 / 31GB 机上取 6（含水瓦片一般 ≤6，全并发亦 ~20GB）。
+/// 可用 env `WATER_HYDRO_TILE_WORKERS` 覆盖调参。
+const HYDRO_TILE_WORKERS: usize = 6;
+
+/// 实际瓦片线程数（env 覆盖 + 不超过作业数）。
+fn tile_workers(n_jobs: usize) -> usize {
+    let cap = std::env::var("WATER_HYDRO_TILE_WORKERS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(HYDRO_TILE_WORKERS);
+    cap.max(1).min(n_jobs.max(1))
+}
 
 /// 分阶段耗时累加器（纳秒；供瓦片路径 profile，env `WATER_HYDRO_PROFILE=1` 打印）。
 /// 瓦片内各阶段跨 4 线程累加，故其和 > 墙钟；用于看**相对占比**。
@@ -419,13 +430,14 @@ fn run_hydro_pipeline_tiled(
         trow0 += tile;
     }
 
-    // ── 含水瓦片 4 线程并行处理（全分辨率不变）──
+    // ── 含水瓦片并行处理（全分辨率不变）──
     let n_water = jobs.len() as u32;
+    let workers = tile_workers(jobs.len());
     tracing::info!(
-        "[hydro] 并行处理 {n_water} 个含水瓦片（{HYDRO_TILE_WORKERS} 线程，全分辨率）…"
+        "[hydro] 并行处理 {n_water} 个含水瓦片（{workers} 线程，全分辨率）…"
     );
     let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(HYDRO_TILE_WORKERS)
+        .num_threads(workers)
         .build()
         .map_err(|err| WaterError::Other(anyhow::anyhow!("rayon 线程池构建失败: {err}")))?;
     let done = std::sync::atomic::AtomicU32::new(0);
