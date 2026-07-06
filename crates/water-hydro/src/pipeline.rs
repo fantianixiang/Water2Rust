@@ -17,17 +17,22 @@ use std::time::Instant;
 
 use water_io::raster::{Dem, DemMeta};
 use water_io::vector::read_vector;
-use water_io::warp::{reproject_with_max_error, suggested_warp_output, Resampling};
+use water_io::warp::{reproject_masked, reproject_with_max_error, suggested_warp_output, Resampling};
 use water_io::geotiff_write::write_geotiff_f32;
 use water_core::error::WaterError;
 use water_core::Result;
 
 use crate::crs::{proj_from_epsg, reproject_polygon, resolve_working_crs};
-use crate::river_pipeline::compute_water_surface;
+use crate::river_pipeline::{compute_water_surface, window_from_geometry_bounds};
 use crate::{HydroJob, OutputMode};
 
 /// 输出阶段裙边带宽（Python `HYDRO_WATER_SKIRT_PIXELS`，模块常量）。
 const HYDRO_WATER_SKIRT_PIXELS: usize = 5;
+
+/// 正向 warp 掩膜膨胀半径（像素）。须 ≥ 裙边 ramp 读取带 `2·skirt` + 双线性 halo + solve
+/// 边界 halo，保证掩膜覆盖 `compute_water_surface` 消费的**全部** dem_work 像元（parity 由
+/// 全量 md5 逐位一致背书）。取 `2·5 + 6 = 16` 留足裕度。
+const HYDRO_WARP_MASK_DILATE: usize = 2 * HYDRO_WATER_SKIRT_PIXELS + 6;
 /// GDAL warp 默认近似变换误差阈值（像素）。复刻 GDAL `errorThreshold=0.125`，
 /// 使 DEM 重投影与原 Python(GDAL) 参照 bit 级一致（见 docs/HYDRO.md）。
 const GDAL_WARP_MAX_ERROR: f64 = 0.125;
@@ -199,10 +204,35 @@ fn process_window(
             "瓦片工作网格 {work_pixels} px 超出预算（瓦片边长应更小）",
         )));
     }
-    let dem_work = reproject_with_max_error(
+    // 正向 warp「只算需要部分」：构造工作网格水掩膜（栅格化各多边形 + 膨胀覆盖
+    // solve 边界halo 与裙边读取带 2N），只重投影掩膜内 DEM 像元。**不改变输出网格/变换器
+    // 拟合**（区别于已证伪的 bbox 裁剪），故 compute_water_surface 消费的像元逐位一致；
+    // 掩膜外像元留 NaN，其对应输出走「精确源 DEM 回填」，从不消费 dem_work。
+    let (wh, ww) = (warp.height as usize, warp.width as usize);
+    let mut work_mask = Array2::<bool>::from_elem((wh, ww), false);
+    for polygon in polys_target {
+        if polygon.exterior().0.is_empty() {
+            continue;
+        }
+        if let Some((r0, c0, lh, lw, win_t)) =
+            window_from_geometry_bounds(polygon, &warp.transform, wh, ww, 2)
+        {
+            let pm = water_io::raster::rasterize_polygon_mask(polygon, &win_t, lw as u32, lh as u32, all_touched);
+            for r in 0..lh {
+                for c in 0..lw {
+                    if pm[(r, c)] {
+                        work_mask[(r0 + r, c0 + c)] = true;
+                    }
+                }
+            }
+        }
+    }
+    // 膨胀覆盖读取带（4-连通菱形膨胀，半径 = DILATE ≥ 裙边 ramp 2N + halo）。
+    let work_mask = water_core::raster_ops::binary_dilation(&work_mask, HYDRO_WARP_MASK_DILATE);
+    let dem_work = reproject_masked(
         &dem_src, src_win_t, src_epsg, m.nodata,
         warp.transform, warp.width, warp.height, target_epsg,
-        Resampling::Bilinear, GDAL_WARP_MAX_ERROR,
+        Resampling::Bilinear, GDAL_WARP_MAX_ERROR, Some(&work_mask),
     )?
     .mapv(|v| v as f64);
     if let Some(a) = acc {
@@ -229,16 +259,22 @@ fn process_window(
         PhaseAcc::add(&a.compose_ns, t);
     }
     let t = Instant::now();
-    let surf_src = reproject_with_max_error(
-        &masked_surface, warp.transform, target_epsg, None,
-        src_win_t, pad_w as usize, pad_h as usize, src_epsg,
-        Resampling::Bilinear, GDAL_WARP_MAX_ERROR,
-    )?;
+    // 先算 mask（nearest，全窗）——compose 只消费 mask_src>=0.5 的像元，故它天然是
+    // surf_src 的「需要计算」掩膜。
     let mask_f32 = mask_work.mapv(|b| if b { 1.0f32 } else { 0.0f32 });
     let mask_src = reproject_with_max_error(
         &mask_f32, warp.transform, target_epsg, None,
         src_win_t, pad_w as usize, pad_h as usize, src_epsg,
         Resampling::Nearest, GDAL_WARP_MAX_ERROR,
+    )?;
+    // 掩膜化反向 warp：只计算 mask_src>=0.5 的输出像元（其余留 NaN，compose 不消费）。
+    // 保持整窗变换器不变 → 被计算像元与全量 warp **逐位一致**（见 reproject_masked 文档），
+    // 避免改输出网格带来的亚像素粗差（对比 pipeline-exam/H6 bbox 裁剪失败）。
+    let surf_dst_mask = mask_src.mapv(|v| v >= 0.5);
+    let surf_src = reproject_masked(
+        &masked_surface, warp.transform, target_epsg, None,
+        src_win_t, pad_w as usize, pad_h as usize, src_epsg,
+        Resampling::Bilinear, GDAL_WARP_MAX_ERROR, Some(&surf_dst_mask),
     )?;
     if let Some(a) = acc {
         PhaseAcc::add(&a.warp_ns, t);

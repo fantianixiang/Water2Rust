@@ -13,7 +13,8 @@ pub mod vector;
 /// warp：建议输出网格 + 重投影重采样 —— 已上游至 `eci-gdal-alg`，此处 re-export 以保持既有调用路径。
 pub mod warp {
     pub use eci_gdal_alg::{
-        reproject, reproject_with_max_error, suggested_warp_output, Resampling, WarpOutput,
+        reproject, reproject_masked, reproject_with_max_error, suggested_warp_output, Resampling,
+        WarpOutput,
     };
 }
 
