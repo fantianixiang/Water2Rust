@@ -62,39 +62,59 @@ fn edt_1d(f: &[f64]) -> (Vec<f64>, Vec<usize>) {
 /// 背景像素距离为 0；并返回每个像素最近背景像素的行/列索引。
 /// 采用 Felzenszwalb–Huttenlocher 两遍（列 + 行）精确算法。
 pub fn distance_transform_edt(mask: &Array2<bool>) -> EdtResult {
+    use rayon::prelude::*;
     let (h, w) = mask.dim();
     let big = (h * h + w * w) as f64 * 4.0 + 1.0;
 
-    // 列遍：每列做 1D 变换，得到到本列最近背景的平方纵距 + 源行。
+    // 列遍：每列做 1D 变换，得到到本列最近背景的平方纵距 + 源行。各列独立 → 并行。
+    let col_res: Vec<(Vec<f64>, Vec<usize>)> = (0..w)
+        .into_par_iter()
+        .map(|c| {
+            let mut col = vec![0.0f64; h];
+            for (r, cv) in col.iter_mut().enumerate() {
+                *cv = if mask[(r, c)] { big } else { 0.0 };
+            }
+            edt_1d(&col)
+        })
+        .collect();
     let mut d1 = Array2::<f64>::zeros((h, w));
     let mut src_row = Array2::<usize>::zeros((h, w));
-    let mut col = vec![0.0f64; h];
-    for c in 0..w {
-        for r in 0..h {
-            col[r] = if mask[(r, c)] { big } else { 0.0 };
-        }
-        let (d, arg) = edt_1d(&col);
+    for (c, (d, arg)) in col_res.iter().enumerate() {
         for r in 0..h {
             d1[(r, c)] = d[r];
             src_row[(r, c)] = arg[r];
         }
     }
 
-    // 行遍：对每行以 d1 为 f 做 1D 变换，合成平方欧氏距离 + 源列。
+    // 行遍：对每行以 d1 为 f 做 1D 变换，合成平方欧氏距离 + 源列。各行独立 → 并行。
+    let row_res: Vec<(Vec<f64>, Vec<i64>, Vec<i64>)> = (0..h)
+        .into_par_iter()
+        .map(|r| {
+            let mut row = vec![0.0f64; w];
+            for (c, rv) in row.iter_mut().enumerate() {
+                *rv = d1[(r, c)];
+            }
+            let (d, arg) = edt_1d(&row);
+            let mut dist = vec![0.0f64; w];
+            let mut ir = vec![0i64; w];
+            let mut ic = vec![0i64; w];
+            for c in 0..w {
+                dist[c] = d[c].max(0.0).sqrt();
+                let sc = arg[c];
+                ir[c] = src_row[(r, sc)] as i64;
+                ic[c] = sc as i64;
+            }
+            (dist, ir, ic)
+        })
+        .collect();
     let mut distances = Array2::<f64>::zeros((h, w));
     let mut index_row = Array2::<i64>::zeros((h, w));
     let mut index_col = Array2::<i64>::zeros((h, w));
-    let mut row = vec![0.0f64; w];
-    for r in 0..h {
+    for (r, (dist, ir, ic)) in row_res.iter().enumerate() {
         for c in 0..w {
-            row[c] = d1[(r, c)];
-        }
-        let (d, arg) = edt_1d(&row);
-        for c in 0..w {
-            distances[(r, c)] = d[c].max(0.0).sqrt();
-            let sc = arg[c];
-            index_row[(r, c)] = src_row[(r, sc)] as i64;
-            index_col[(r, c)] = sc as i64;
+            distances[(r, c)] = dist[c];
+            index_row[(r, c)] = ir[c];
+            index_col[(r, c)] = ic[c];
         }
     }
 

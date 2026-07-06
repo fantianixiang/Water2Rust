@@ -39,10 +39,10 @@ const OUTPUT_NODATA: f64 = -9999.0;
 const HYDRO_TILED_TILE_SIZE: u32 = 8192;
 /// 瓦片 padding（源像素）。Python `max(HYDRO_TILED_SURFACE_PADDING_PX, 64)`。
 const HYDRO_TILED_PAD_PX: u32 = 64;
-/// 瓦片级并行线程数上限（保持全分辨率，仅瓦片之间并行；faer 内部 `Par::Seq`，不嵌套竞争）。
-/// 峰值内存 ~ 并发瓦片数 × 单瓦片(~3GB)；24 核 / 31GB 机上取 6（含水瓦片一般 ≤6，全并发亦 ~20GB）。
-/// 可用 env `WATER_HYDRO_TILE_WORKERS` 覆盖调参。
-const HYDRO_TILE_WORKERS: usize = 6;
+/// 瓦片级**并发数上限**（限峰值内存；线程池另取满核，瓦片内层并行借空闲线程铺满 CPU）。
+/// 每并发瓦片 ~4–6GB（含内层并行临时量）；24 核 / 31GB 机上取 3（~19GB，安全裕度足）。
+/// 提高可略降墙钟但显著增内存（4→~26GB、6→OOM）；可用 env `WATER_HYDRO_TILE_WORKERS` 调参。
+const HYDRO_TILE_WORKERS: usize = 3;
 
 /// 实际瓦片线程数（env 覆盖 + 不超过作业数）。
 fn tile_workers(n_jobs: usize) -> usize {
@@ -431,31 +431,43 @@ fn run_hydro_pipeline_tiled(
     }
 
     // ── 含水瓦片并行处理（全分辨率不变）──
+    // 两级并行：块内 mem_tiles 个瓦片并发（限峰值内存），线程池取满核，瓦片**内层**
+    // （per-polygon / EDT / 高斯 / 膨胀已 rayon 化）借空闲线程铺满 CPU。
     let n_water = jobs.len() as u32;
-    let workers = tile_workers(jobs.len());
+    let mem_tiles = tile_workers(jobs.len());
+    let n_threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(mem_tiles)
+        .max(mem_tiles);
     tracing::info!(
-        "[hydro] 并行处理 {n_water} 个含水瓦片（{workers} 线程，全分辨率）…"
+        "[hydro] 并行处理 {n_water} 个含水瓦片（并发瓦片 {mem_tiles}，线程 {n_threads}，全分辨率）…"
     );
     let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(workers)
+        .num_threads(n_threads)
         .build()
         .map_err(|err| WaterError::Other(anyhow::anyhow!("rayon 线程池构建失败: {err}")))?;
     let done = std::sync::atomic::AtomicU32::new(0);
     let acc = PhaseAcc::default();
     let t_tiles = Instant::now();
-    let results: Vec<(Win, Array2<f32>)> = pool.install(|| {
-        jobs.par_iter()
-            .map(|&(pad_win, core_win)| {
-                let core = process_window(
-                    dem, m, src_epsg, target_epsg, polys_target, fclass,
-                    job.all_touched, job.output_mode, pad_win, core_win,
-                    if prof { Some(&acc) } else { None },
-                )?;
-                let k = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                tracing::info!("[hydro] 含水瓦片 {k}/{n_water} 完成");
-                Ok((core_win, core))
-            })
-            .collect::<Result<Vec<_>>>()
+    let results: Vec<(Win, Array2<f32>)> = pool.install(|| -> Result<Vec<(Win, Array2<f32>)>> {
+        let mut all: Vec<(Win, Array2<f32>)> = Vec::with_capacity(jobs.len());
+        for chunk in jobs.chunks(mem_tiles) {
+            let mut cr: Vec<(Win, Array2<f32>)> = chunk
+                .par_iter()
+                .map(|&(pad_win, core_win)| {
+                    let core = process_window(
+                        dem, m, src_epsg, target_epsg, polys_target, fclass,
+                        job.all_touched, job.output_mode, pad_win, core_win,
+                        if prof { Some(&acc) } else { None },
+                    )?;
+                    let k = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                    tracing::info!("[hydro] 含水瓦片 {k}/{n_water} 完成");
+                    Ok((core_win, core))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            all.append(&mut cr);
+        }
+        Ok(all)
     })?;
     if prof {
         tracing::info!(

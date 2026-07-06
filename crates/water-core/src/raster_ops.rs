@@ -13,6 +13,7 @@
 
 use crate::error::{Result, WaterError};
 use ndarray::Array2;
+use rayon::prelude::*;
 
 /// 二值形态学腐蚀（scipy.ndimage.binary_erosion 默认语义）�?
 ///
@@ -56,20 +57,21 @@ pub fn binary_dilation(mask: &Array2<bool>, iterations: usize) -> Array2<bool> {
     let mut cur = mask.clone();
     for _ in 0..iterations {
         let mut out = cur.clone();
-        for r in 0..h {
-            for c in 0..w {
-                if cur[(r, c)] {
+        let curr = &cur;
+        out.as_slice_mut().unwrap().par_chunks_mut(w).enumerate().for_each(|(r, orow)| {
+            for (c, ov) in orow.iter_mut().enumerate() {
+                if curr[(r, c)] {
                     continue;
                 }
-                let up = r > 0 && cur[(r - 1, c)];
-                let down = r + 1 < h && cur[(r + 1, c)];
-                let left = c > 0 && cur[(r, c - 1)];
-                let right = c + 1 < w && cur[(r, c + 1)];
+                let up = r > 0 && curr[(r - 1, c)];
+                let down = r + 1 < h && curr[(r + 1, c)];
+                let left = c > 0 && curr[(r, c - 1)];
+                let right = c + 1 < w && curr[(r, c + 1)];
                 if up || down || left || right {
-                    out[(r, c)] = true;
+                    *ov = true;
                 }
             }
-        }
+        });
         cur = out;
     }
     cur
@@ -107,28 +109,29 @@ pub fn gaussian_smooth(data: &Array2<f64>, sigma: f64) -> Array2<f64> {
     let (h, w) = data.dim();
     // 沿轴 0（行方向/纵向�?
     let mut tmp = Array2::<f64>::zeros((h, w));
-    for c in 0..w {
-        for r in 0..h {
+    // 逐行并行（每个输出元素独立，读只读输入；与串行逐位一致）。
+    tmp.as_slice_mut().unwrap().par_chunks_mut(w).enumerate().for_each(|(r, trow)| {
+        for (c, tv) in trow.iter_mut().enumerate() {
             let mut acc = 0.0;
             for (k, &wk) in kernel.iter().enumerate() {
                 let rr = reflect_index(r as i64 + k as i64 - radius, h as i64);
                 acc += wk * data[(rr, c)];
             }
-            tmp[(r, c)] = acc;
+            *tv = acc;
         }
-    }
+    });
     // 沿轴 1（列方向/横向�?
     let mut out = Array2::<f64>::zeros((h, w));
-    for r in 0..h {
-        for c in 0..w {
+    out.as_slice_mut().unwrap().par_chunks_mut(w).enumerate().for_each(|(r, orow)| {
+        for (c, ov) in orow.iter_mut().enumerate() {
             let mut acc = 0.0;
             for (k, &wk) in kernel.iter().enumerate() {
                 let cc = reflect_index(c as i64 + k as i64 - radius, w as i64);
                 acc += wk * tmp[(r, cc)];
             }
-            out[(r, c)] = acc;
+            *ov = acc;
         }
-    }
+    });
     out
 }
 
@@ -150,28 +153,28 @@ pub fn gaussian_smooth_f32(data: &Array2<f32>, sigma: f64) -> Array2<f64> {
 
     // �?0（行）：累加 f64，中间结果按 f32 舍入�?
     let mut tmp = Array2::<f32>::zeros((h, w));
-    for c in 0..w {
-        for r in 0..h {
+    tmp.as_slice_mut().unwrap().par_chunks_mut(w).enumerate().for_each(|(r, trow)| {
+        for (c, tv) in trow.iter_mut().enumerate() {
             let mut acc = 0.0f64;
             for (k, &wk) in kernel.iter().enumerate() {
                 let rr = reflect_index(r as i64 + k as i64 - radius, h as i64);
                 acc += wk * data[(rr, c)] as f64;
             }
-            tmp[(r, c)] = acc as f32;
+            *tv = acc as f32;
         }
-    }
+    });
     // �?1（列）：�?f32 中间结果，累�?f64，输出按 f32 舍入后提升为 f64�?
     let mut out = Array2::<f64>::zeros((h, w));
-    for r in 0..h {
-        for c in 0..w {
+    out.as_slice_mut().unwrap().par_chunks_mut(w).enumerate().for_each(|(r, orow)| {
+        for (c, ov) in orow.iter_mut().enumerate() {
             let mut acc = 0.0f64;
             for (k, &wk) in kernel.iter().enumerate() {
                 let cc = reflect_index(c as i64 + k as i64 - radius, w as i64);
                 acc += wk * tmp[(r, cc)] as f64;
             }
-            out[(r, c)] = acc as f32 as f64;
+            *ov = acc as f32 as f64;
         }
-    }
+    });
     out
 }
 
