@@ -34,3 +34,6 @@ eci-gdal-contrib/
 
 # Nsight Systems 报告（大二进制，仅本地留存，不入库）
 /nsys-reports/
+
+# 打包产物（二进制 + 内置 CUDA 运行时，本地可直接运行）
+/dist/
